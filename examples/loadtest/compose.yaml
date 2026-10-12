@@ -1,0 +1,29 @@
+# Fleet load test: N "VMs" (app writing logs + grepalert agent), one dashboard.
+#
+#   docker compose up -d --build --scale vm=10
+#   LOG_RATE=20MB docker compose up -d --scale vm=10     # per-VM write rate
+#
+name: grepalert-loadtest
+
+services:
+  vm:
+    build: { context: ../.., target: loadtest-vm }
+    image: grepalert-loadtest-vm:dev
+    environment:
+      LOG_RATE: ${LOG_RATE:-10MB}      # bytes per second written by each VM
+      LOG_ROTATE: ${LOG_ROTATE:-1GB}   # rotate (rename to .1) at this size
+      LOG_ERROR_PCT: ${LOG_ERROR_PCT:-1}
+    volumes:
+      - ./agent.yaml:/etc/grepalert/agent.yaml:ro
+
+  dashboard:
+    build: { context: ../.., target: dashboard }
+    image: grepalert-dashboard:dev
+    volumes:
+      - ./dashboard.yaml:/etc/grepalert/dashboard.yaml:ro
+    ports: ["9410:9400"]
+
+  webhook-sink:
+    build: { context: ../.., target: webhook-sink }
+    image: grepalert-webhook-sink:dev
+    ports: ["9609:9599"]

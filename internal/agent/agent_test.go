@@ -1,0 +1,132 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/fadhlanhawali/grepalert/internal/rules"
+)
+
+// TestRestartDoesNotMissLines runs the agent, stops it, writes lines while it
+// is down and checks that the restarted agent alerts on exactly those lines.
+func TestRestartDoesNotMissLines(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var a Alert
+		json.NewDecoder(r.Body).Decode(&a)
+		mu.Lock()
+		got = append(got, a.Line)
+		mu.Unlock()
+	}))
+	defer hook.Close()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	rulesYAML := fmt.Sprintf("webhooks:\n  - name: h\n    url: %s\nrules:\n  - name: err\n    files: [%q]\n    pattern: ERROR\n    webhooks: [h]\n", hook.URL, logPath)
+	if err := os.WriteFile(rulesPath, []byte(rulesYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, logPath, "ERROR before first start (history, ignored)\n")
+
+	cfg := Config{
+		RulesFile:      rulesPath,
+		PollInterval:   rules.Duration(20 * time.Millisecond),
+		RescanInterval: rules.Duration(time.Hour),
+		StateInterval:  rules.Duration(time.Hour), // only the shutdown save matters here
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	run := func(writes ...string) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error)
+		a := New(cfg, log)
+		go func() { done <- a.Run(ctx) }()
+		time.Sleep(150 * time.Millisecond) // let tailers open the file
+		for _, w := range writes {
+			appendFile(t, logPath, w)
+		}
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run("ERROR one\n")
+	if _, err := os.Stat(filepath.Join(dir, "grepalert.state.json")); err != nil {
+		t.Fatalf("state file not written: %v", err)
+	}
+
+	appendFile(t, logPath, "ERROR while stopped\nINFO fine\n")
+	run("ERROR two\n")
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"ERROR one", "ERROR while stopped", "ERROR two"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("alerts = %q, want %q", got, want)
+	}
+}
+
+// TestGlobPicksUpNewFiles checks that a *.log rule tails existing files and
+// files created later, and ignores files that do not match.
+func TestGlobPicksUpNewFiles(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var a Alert
+		json.NewDecoder(r.Body).Decode(&a)
+		mu.Lock()
+		got = append(got, filepath.Base(a.File)+": "+a.Line)
+		mu.Unlock()
+	}))
+	defer hook.Close()
+
+	dir := t.TempDir()
+	logs := filepath.Join(dir, "logs")
+	os.Mkdir(logs, 0o755)
+	appendFile(t, filepath.Join(logs, "a.log"), "")
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	os.WriteFile(rulesPath, []byte(fmt.Sprintf("webhooks:\n  - name: h\n    url: %s\nrules:\n  - name: err\n    files: [%q]\n    pattern: ERROR\n    webhooks: [h]\n",
+		hook.URL, filepath.Join(logs, "*.log"))), 0o644)
+
+	a := New(Config{RulesFile: rulesPath, StateFile: "off",
+		PollInterval: rules.Duration(20 * time.Millisecond), RescanInterval: rules.Duration(100 * time.Millisecond)},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- a.Run(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	appendFile(t, filepath.Join(logs, "a.log"), "ERROR in a\n")
+	appendFile(t, filepath.Join(logs, "b.log"), "ERROR in b, created after start\n")
+	appendFile(t, filepath.Join(logs, "c.txt"), "ERROR not a .log file\n")
+	time.Sleep(400 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]bool{"a.log: ERROR in a": true, "b.log: ERROR in b, created after start": true}
+	if len(got) != len(want) {
+		t.Fatalf("alerts = %q", got)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Fatalf("unexpected alert %q (all: %q)", g, got)
+		}
+	}
+}

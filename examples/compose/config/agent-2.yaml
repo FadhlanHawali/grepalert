@@ -1,0 +1,9 @@
+# agent-2 is seeded with its own rules (config/agent-2-rules.yaml) on first
+# start. Leave it ungrouped to edit its rules on its own, or add it to a group.
+name: edge-proxy-1
+listen: ":9300"
+token: ${GREPALERT_AGENT_TOKEN}
+rules_file: /var/lib/grepalert/rules.yaml
+state_file: /var/lib/grepalert/state.json
+start_from: end
+memory_limit: 32MiB

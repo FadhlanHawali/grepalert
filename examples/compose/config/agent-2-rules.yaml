@@ -1,0 +1,16 @@
+webhooks:
+  - name: sink
+    url: ${WEBHOOK_URL}/edge
+    template: '{"text": {{ json .Text }}}'
+
+rules:
+  - name: nginx-5xx
+    description: Upstream errors served to clients
+    files: ["/var/log/demo/access.log"]
+    pattern: '" (?P<status>5\d\d) '
+    severity: critical
+    webhooks: [sink]
+    suppress:
+      window: 30s
+      max_alerts: 1
+      group_by: status

@@ -1,0 +1,17 @@
+# grepalert dashboard settings. ${VAR} is expanded from the environment.
+# Agents and groups are added in the web UI ("Connect agent", "New group") and
+# saved to data_file.
+listen: ":9400"
+auth:
+  username: admin
+  password: ${GREPALERT_DASHBOARD_PASSWORD}   # empty = no auth (not recommended)
+
+# Agents, groups and group rules. Contains agent/git tokens: keep it private.
+data_file: /var/lib/grepalert-dashboard/data.json
+
+# How often group members are checked; agents that drifted or came back
+# online get the group's rules again.
+reconcile_interval: 30s
+
+# tls_cert: /etc/grepalert/dashboard.crt
+# tls_key: /etc/grepalert/dashboard.key

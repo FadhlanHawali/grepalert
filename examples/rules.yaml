@@ -1,0 +1,50 @@
+# grepalert rules. Keep this file in git and let the dashboard sync it, or edit
+# it in place: the agent picks up changes without a restart.
+
+webhooks:
+  # Generic JSON: the full alert object is POSTed.
+  - name: ops-webhook
+    url: ${OPS_WEBHOOK_URL}           # ${VAR} is resolved on the agent, keeping secrets out of git
+    headers:
+      Authorization: Bearer ${OPS_WEBHOOK_TOKEN}
+
+  # Slack / Mattermost / Google Chat style: render your own body.
+  - name: slack
+    url: ${SLACK_WEBHOOK_URL}
+    template: '{"text": {{ json .Text }}}'
+
+  # Discord
+  - name: discord
+    url: ${DISCORD_WEBHOOK_URL}
+    template: '{"content": {{ json (trunc 1900 .Text) }}}'
+
+rules:
+  - name: nginx-5xx
+    description: Upstream errors served to clients
+    files: ["/var/log/nginx/access.log"]
+    pattern: '" (?P<status>5\d\d) '
+    exclude: 'GET /healthz'
+    severity: critical
+    labels: {team: web}
+    webhooks: [slack]
+    suppress:
+      window: 5m        # at most max_alerts per window...
+      max_alerts: 1
+      group_by: status  # ...per distinct status code
+      # summary: true   # when the window closes, send "N more matches suppressed"
+
+  - name: app-exceptions
+    files: ["/var/log/myapp/*.log"]   # globs are re-scanned; new files are picked up automatically
+    pattern: '(?i)(exception|panic|fatal)'
+    severity: warning
+    webhooks: [ops-webhook, slack]
+    suppress:
+      window: 10m
+      max_alerts: 3
+
+  - name: disk-full
+    files: ["/var/log/syslog"]
+    pattern: 'No space left on device'
+    severity: critical
+    webhooks: [ops-webhook]
+    # no suppress block: every match alerts

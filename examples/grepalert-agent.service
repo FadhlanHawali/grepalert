@@ -1,0 +1,20 @@
+[Unit]
+Description=grepalert agent (log pattern alerting)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/grepalert-agent -config /etc/grepalert/agent.yaml
+EnvironmentFile=-/etc/grepalert/agent.env
+WorkingDirectory=/etc/grepalert
+User=grepalert
+# Needs read access to the logs it tails, e.g. the adm group on Debian/Ubuntu.
+SupplementaryGroups=adm
+Restart=on-failure
+# Hard ceiling on top of the agent's soft memory_limit.
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/grepalert
+
+[Install]
+WantedBy=multi-user.target

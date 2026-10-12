@@ -1,0 +1,24 @@
+# Pretend this file lives in GitHub/GitLab. Create a git group in the dashboard
+# with provider "Raw URL" and http://webhook-sink:9599/repo/rules.yaml. Edit this
+# file and click "Sync from git": every agent in the group picks it up live.
+webhooks:
+  - name: sink
+    url: ${WEBHOOK_URL}/app        # resolved on the agent from its environment
+
+rules:
+  - name: app-errors
+    files: ["/var/log/demo/app.log"]
+    pattern: 'ERROR code=(?P<code>\w+)'
+    severity: warning
+    labels: {service: demo-api}
+    webhooks: [sink]
+    suppress:
+      window: 1m
+      max_alerts: 1
+      group_by: code       # one alert per error code per minute, then a summary
+
+  - name: app-fatal
+    files: ["/var/log/demo/app.log"]
+    pattern: 'FATAL'
+    severity: critical
+    webhooks: [sink]

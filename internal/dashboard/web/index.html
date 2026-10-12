@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grepalert</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6b7385; --border: #e2e5eb; --hover: #f1f4fa;
+  --accent: #2f6fed; --accent-text: #fff; --ok: #1f9d55; --warn: #b7791f; --bad: #d64545; --code: #f3f5f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #11141a; --panel: #191d25; --text: #e4e7ee; --muted: #8b93a7; --border: #2a303c; --hover: #20252f;
+    --accent: #6c9bff; --accent-text: #0b1020; --ok: #3ccb7f; --warn: #f0b429; --bad: #ff6b6b; --code: #10131a; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 17px; margin: 0; }
+header h1 span { color: var(--accent); }
+.spacer { flex: 1; }
+.layout { display: grid; grid-template-columns: 240px 1fr; min-height: calc(100vh - 53px); }
+nav { border-right: 1px solid var(--border); background: var(--panel); padding: 12px 8px; }
+nav .label { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); padding: 14px 10px 6px; }
+nav a { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; color: var(--text); text-decoration: none; cursor: pointer; }
+nav a:hover { background: var(--hover); }
+nav a.on { background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+nav a .count { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: normal; }
+nav .new { color: var(--accent); }
+main { padding: 20px; min-width: 0; display: grid; gap: 16px; align-content: start; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.card-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; flex-wrap: wrap; }
+.card-head h2 { margin: 0; font-size: 18px; }
+.card-head .sub { color: var(--muted); margin-top: 2px; }
+.card-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.meta { display: flex; gap: 18px; flex-wrap: wrap; padding: 0 16px 14px; color: var(--muted); font-size: 13px; }
+.meta b { color: var(--text); font-weight: 600; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 12px; border-top: 1px solid var(--border); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; background: color-mix(in srgb, var(--bg) 50%, var(--panel)); }
+tr.click { cursor: pointer; }
+tr.click:hover, tr.sel { background: var(--hover); }
+td.wrap { white-space: normal; word-break: break-word; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.badge.ok { color: var(--ok); border-color: currentColor; } .badge.warn { color: var(--warn); border-color: currentColor; } .badge.bad { color: var(--bad); border-color: currentColor; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; }
+.muted { color: var(--muted); }
+button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; white-space: nowrap; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--bad); }
+button.danger:hover { border-color: var(--bad); }
+button.link { border: none; background: none; color: var(--accent); padding: 0; }
+button:disabled { opacity: .5; cursor: default; }
+.tabs { display: flex; gap: 2px; padding: 0 12px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow-x: auto; }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 12px; background: none; color: var(--muted); }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.pane { padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.stat .k { font-size: 12px; color: var(--muted); } .stat .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+textarea { width: 100%; min-height: 380px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--code); color: var(--text); resize: vertical; tab-size: 2; }
+textarea[readonly] { opacity: .85; }
+input[type=text], input[type=password], input[type=url], select { width: 100%; font: inherit; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 0; border-color: var(--accent); }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.msg { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12.5px; padding: 10px 12px; border-radius: 6px; margin-top: 10px; }
+.msg.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.msg.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.msg.info { background: color-mix(in srgb, var(--accent) 10%, transparent); font-family: inherit; font-size: 13px; }
+.empty { padding: 36px 16px; color: var(--muted); text-align: center; }
+.empty h3 { color: var(--text); margin: 0 0 6px; font-size: 16px; }
+h3.sec { font-size: 13px; margin: 18px 0 8px; color: var(--muted); }
+pre.preview { max-height: 380px; overflow: auto; background: var(--code); padding: 12px; border-radius: 6px; border: 1px solid var(--border); margin: 10px 0 0; }
+
+dialog { border: 1px solid var(--border); border-radius: 10px; padding: 0; width: min(540px, calc(100vw - 32px)); background: var(--panel); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(10, 14, 22, .45); }
+dialog form { display: grid; gap: 14px; padding: 20px; }
+dialog h2 { margin: 0; font-size: 17px; }
+dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: center; padding-top: 4px; flex-wrap: wrap; }
+.field { display: grid; gap: 5px; }
+.field > span { font-size: 13px; font-weight: 600; }
+.field small { color: var(--muted); font-size: 12px; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg label { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; display: grid; gap: 2px; }
+.seg label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.seg label { position: relative; }
+.seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.seg label:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.seg b { font-size: 13px; } .seg small { color: var(--muted); font-size: 12px; }
+.stack { display: grid; gap: 12px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#toast { position: fixed; bottom: 20px; right: 20px; display: grid; gap: 8px; z-index: 20; }
+#toast div { background: var(--text); color: var(--panel); padding: 10px 14px; border-radius: 8px; max-width: 420px; box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+#toast div.bad { background: var(--bad); color: #fff; }
+
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; }
+  nav { border-right: none; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px; }
+  nav .label { display: none; }
+  main { padding: 12px; }
+  .two, .seg { grid-template-columns: 1fr; }
+  header .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1><span>grep</span>alert</h1>
+  <span class="muted hide-sm" id="summary"></span>
+  <span class="spacer"></span>
+  <label class="muted hide-sm"><input type="checkbox" id="auto" checked> auto-refresh</label>
+  <button data-action="new-group">New group</button>
+  <button class="primary" data-action="connect">Connect agent</button>
+</header>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main id="main"></main>
+</div>
+
+<!-- Connect / edit agent -->
+<dialog id="dlg-agent">
+  <form method="dialog" id="f-agent" autocomplete="off">
+    <h2 id="fa-title">Connect agent</h2>
+    <label class="field"><span>Agent URL</span>
+      <input type="text" name="url" placeholder="http://10.0.0.5:9300" required>
+      <small>Where the agent's API listens (its <code>listen</code> setting).</small></label>
+    <label class="field"><span>Token</span>
+      <input type="password" name="token" placeholder="the agent's token">
+      <small id="fa-token-hint">The <code>token</code> from the agent's config. You can also enter <code>${ENV_VAR}</code>.</small></label>
+    <div class="two">
+      <label class="field"><span>Name</span>
+        <input type="text" name="name" placeholder="from the agent">
+        <small>Leave empty to use the agent's own name.</small></label>
+      <label class="field"><span>Group</span>
+        <select name="group"></select>
+        <small>The group's rules are pushed to it.</small></label>
+    </div>
+    <label class="check"><input type="checkbox" name="insecure"> Skip TLS certificate verification (self-signed HTTPS)</label>
+    <div id="fa-msg"></div>
+    <div class="foot">
+      <button type="button" data-action="test-connection">Test connection</button>
+      <span class="spacer"></span>
+      <button type="button" data-action="close">Cancel</button>
+      <button type="button" class="primary" data-action="save-agent" id="fa-save">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- New / edit group -->
+<dialog id="dlg-group">
+  <form method="dialog" id="f-group" autocomplete="off">
+    <h2 id="fg-title">New group</h2>
+    <div class="two">
+      <label class="field"><span>Name</span><input type="text" name="name" placeholder="web-servers" required></label>
+      <label class="field"><span>Description</span><input type="text" name="description" placeholder="optional"></label>
+    </div>
+    <div class="field"><span>Rules come from</span>
+      <div class="seg">
+        <label><input type="radio" name="source" value="manual" checked><b>This dashboard</b><small>Edit the rules here and push them to the group.</small></label>
+        <label><input type="radio" name="source" value="git"><b>A git repository</b><small>Sync a rules file from GitHub or GitLab.</small></label>
+      </div>
+    </div>
+    <div id="fg-manual" class="field"><span>Start with</span>
+      <select name="seed"></select>
+      <small>You can edit the rules after the group is created.</small></div>
+    <div id="fg-git" class="stack" hidden>
+      <div class="two">
+        <label class="field"><span>Provider</span>
+          <select name="provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="url">Raw URL</option></select></label>
+        <label class="field" data-git="repo"><span>Repository</span><input type="text" name="repo" placeholder="my-org/grepalert-rules"></label>
+      </div>
+      <div class="two" data-git="repo">
+        <label class="field"><span>Branch / tag</span><input type="text" name="ref" placeholder="main"></label>
+        <label class="field"><span>File path</span><input type="text" name="path" placeholder="rules/web.yaml"></label>
+      </div>
+      <label class="field" data-git="url" hidden><span>Rules file URL</span><input type="text" name="rawurl" placeholder="https://example.com/rules.yaml"></label>
+      <label class="field" data-git="repo"><span>Server URL <span class="muted">(self-hosted only)</span></span>
+        <input type="text" name="base_url" placeholder="https://gitlab.example.com or https://ghe.example.com/api/v3"></label>
+      <div class="two">
+        <label class="field"><span>Access token</span><input type="password" name="gtoken" placeholder="read-only token">
+          <small id="fg-token-hint">Read access to the file is enough. You can also enter <code>${GITHUB_TOKEN}</code>.</small></label>
+        <label class="field"><span>Sync</span>
+          <select name="interval"><option value="">Only when I click Sync</option><option value="1m">Every minute</option><option value="5m" selected>Every 5 minutes</option><option value="15m">Every 15 minutes</option><option value="1h">Every hour</option></select></label>
+      </div>
+    </div>
+    <div id="fg-msg"></div>
+    <div class="foot">
+      <button type="button" data-action="close">Cancel</button>
+      <button type="button" class="primary" data-action="save-group" id="fg-save">Create group</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const mb = b => (b / 1048576).toFixed(1) + ' MB';
+const zero = t => !t || t.startsWith('0001');
+const ago = t => {
+  if (zero(t)) return 'never';
+  const s = Math.max(0, (Date.now() - new Date(t)) / 1000);
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+};
+const uptime = t => {
+  let s = Math.floor((Date.now() - new Date(t)) / 1000), d = Math.floor(s / 86400); s %= 86400;
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm';
+};
+const enc = encodeURIComponent;
+
+const EXAMPLE_RULES = `webhooks:
+  - name: alerts
+    url: \${WEBHOOK_URL}      # set WEBHOOK_URL in each agent's environment
+    # template: '{"text": {{ json .Text }}}'   # Slack-style body
+
+rules:
+  - name: errors
+    files: ["/var/log/app/*.log"]
+    pattern: '(?i)error|exception'
+    severity: warning
+    webhooks: [alerts]
+    suppress:
+      window: 5m
+      max_alerts: 1
+`;
+
+async function api(method, path, body, type) {
+  const opts = { method, headers: { 'X-Requested-With': 'grepalert' } };
+  if (body !== undefined) {
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+    opts.headers['Content-Type'] = type || 'application/json';
+  }
+  // Absolute URL from origin: a page opened as http://user:pass@host/ would
+  // otherwise resolve relative URLs with credentials, which fetch() rejects.
+  const r = await fetch(location.origin + path, opts);
+  const ct = r.headers.get('Content-Type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) { const e = new Error((data && data.error) || data || ('HTTP ' + r.status)); e.data = data; throw e; }
+  return { data, headers: r.headers };
+}
+
+function toast(text, bad) {
+  const d = document.createElement('div');
+  d.textContent = text; if (bad) d.className = 'bad';
+  $('#toast').append(d); setTimeout(() => d.remove(), bad ? 7000 : 3500);
+}
+
+// ---------- state ----------
+let data = { agents: [], groups: [] };
+let view = parseHash();            // {kind: 'all'|'ungrouped'|'group', name}
+let selAgent = null, agentTab = 'overview', groupTab = 'agents';
+let editorDirty = false, editorKey = null;
+let editingAgent = null, editingGroup = null;
+
+function parseHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h.startsWith('group/')) return { kind: 'group', name: h.slice(6) };
+  if (h === 'ungrouped') return { kind: 'ungrouped' };
+  return { kind: 'all' };
+}
+function go(v) {
+  view = v; selAgent = null; editorDirty = false; groupTab = 'agents';
+  history.replaceState(null, '', '#' + (v.kind === 'group' ? 'group/' + enc(v.name) : v.kind));
+  render();
+}
+const groupOf = n => data.groups.find(g => g.name === n);
+const agentOf = n => data.agents.find(a => a.name === n);
+
+// Rule state of an agent relative to its group.
+function syncState(a) {
+  if (!a.group) return null;
+  const g = groupOf(a.group);
+  if (!g || !g.rules_hash) return { cls: '', text: 'no group rules yet' };
+  const res = g.state.results[a.name];
+  if (!a.online) return { cls: '', text: 'offline' };
+  if (a.status.rules_hash === g.rules_hash) return { cls: 'ok', text: 'in sync' };
+  if (res && !res.ok) return { cls: 'bad', text: 'push failed', title: res.error };
+  return { cls: 'warn', text: 'out of sync', title: 'will be re-pushed on the next reconcile' };
+}
+
+function groupHealth(g) {
+  const members = g.members.map(agentOf).filter(Boolean);
+  if (g.state.last_error) return 'bad';
+  if (!members.length || !g.rules_hash) return '';
+  const st = members.map(syncState);
+  if (st.some(s => s.cls === 'bad')) return 'bad';
+  if (st.some(s => s.cls === 'warn' || s.text === 'offline')) return 'warn';
+  return 'ok';
+}
+
+// ---------- rendering ----------
+function render() {
+  renderNav(); renderMain();
+  const online = data.agents.filter(a => a.online).length;
+  $('#summary').textContent = data.agents.length ? `${online}/${data.agents.length} agents online` : '';
+}
+
+function renderNav() {
+  const ungrouped = data.agents.filter(a => !a.group).length;
+  const on = (k, n) => view.kind === k && (k !== 'group' || view.name === n) ? 'on' : '';
+  $('#nav').innerHTML = `
+    <a class="${on('all')}" data-nav="all">All agents <span class="count">${data.agents.length}</span></a>
+    <a class="${on('ungrouped')}" data-nav="ungrouped">Ungrouped <span class="count">${ungrouped}</span></a>
+    <div class="label">Groups</div>
+    ${data.groups.map(g => `<a class="${on('group', g.name)}" data-nav="group" data-name="${esc(g.name)}">
+      <span class="dot ${groupHealth(g)}"></span>${esc(g.name)}<span class="count">${g.members.length}</span></a>`).join('')}
+    <a class="new" data-action="new-group">+ New group</a>`;
+}
+
+function renderMain() {
+  const main = $('#main');
+  if (!data.agents.length && !data.groups.length) {
+    main.innerHTML = `<div class="card"><div class="empty"><h3>No agents connected yet</h3>
+      <p>Start <code>grepalert-agent</code> on a server, then connect the dashboard to it.<br>
+      Create a group to share one set of rules across several agents.</p>
+      <div class="row" style="justify-content:center"><button data-action="new-group">New group</button>
+      <button class="primary" data-action="connect">Connect agent</button></div></div></div>`;
+    return;
+  }
+  let html = '';
+  if (view.kind === 'group') {
+    const g = groupOf(view.name);
+    if (!g) { go({ kind: 'all' }); return; }
+    html += groupCard(g);
+  } else {
+    const list = view.kind === 'ungrouped' ? data.agents.filter(a => !a.group) : data.agents;
+    html += `<div class="card"><div class="card-head"><div><h2>${view.kind === 'ungrouped' ? 'Ungrouped agents' : 'All agents'}</h2>
+      <div class="sub">${view.kind === 'ungrouped' ? 'Each of these agents keeps its own rules. Add them to a group to manage rules together.' : 'Every agent connected to this dashboard.'}</div></div>
+      <div class="actions"><button class="primary" data-action="connect">Connect agent</button></div></div>
+      ${agentTable(list, view.kind === 'all')}</div>`;
+  }
+  html += `<div id="agent-detail"></div>`;
+  main.innerHTML = html;
+  if (view.kind === 'group' && groupTab === 'rules') loadGroupRules();
+  renderAgentDetail();
+}
+
+function agentTable(list, showGroup, groupCtx) {
+  if (!list.length) return `<div class="empty">${groupCtx ? 'No agents in this group yet.' : 'No agents here.'}<div class="row" style="justify-content:center">
+    <button class="primary" data-action="connect" ${groupCtx ? `data-group="${esc(groupCtx)}"` : ''}>Connect agent</button>
+    ${groupCtx && data.agents.some(a => a.group !== groupCtx) ? `<button data-action="add-existing" data-group="${esc(groupCtx)}">Add an existing agent</button>` : ''}</div></div>`;
+  return `<div class="scroll"><table><thead><tr>
+    <th>Agent</th>${showGroup ? '<th>Group</th>' : ''}<th>Rules</th><th>Host</th><th>Version</th><th>Uptime</th>
+    <th class="num">Files</th><th class="num">Alerts</th><th class="num">Failed / dropped</th><th class="num">Memory</th></tr></thead><tbody>
+    ${list.map(a => {
+      const sel = selAgent === a.name ? 'sel' : '';
+      const group = showGroup ? `<td>${a.group ? `<a class="badge" data-nav="group" data-name="${esc(a.group)}" style="cursor:pointer">${esc(a.group)}</a>` : '<span class="muted">—</span>'}</td>` : '';
+      if (!a.online) return `<tr class="click ${sel}" data-agent="${esc(a.name)}"><td><span class="dot bad"></span> ${esc(a.name)}<div class="muted mono">${esc(a.url)}</div></td>${group}
+        <td colspan="8" class="wrap"><span class="badge bad">offline</span> <span class="muted">${esc(a.error)}</span></td></tr>`;
+      const s = a.status, st = syncState(a);
+      const rules = st ? `<span class="badge ${st.cls}" title="${esc(st.title || '')}">${esc(st.text)}</span>` : `<code>${esc(s.rules_hash)}</code> <span class="muted">${(s.rules || []).length} rules</span>`;
+      const bad = s.webhooks.failed + s.webhooks.dropped;
+      return `<tr class="click ${sel}" data-agent="${esc(a.name)}">
+        <td><span class="dot ok"></span> ${esc(a.name)}<div class="muted mono">${esc(a.url)}</div></td>${group}
+        <td>${rules}</td><td>${esc(s.host)}</td><td>${esc(s.version)}</td><td>${uptime(s.started_at)}</td>
+        <td class="num">${(s.files || []).length}</td><td class="num">${s.webhooks.sent}</td>
+        <td class="num">${bad ? `<span class="badge bad">${s.webhooks.failed} / ${s.webhooks.dropped}</span>` : '0 / 0'}</td>
+        <td class="num">${mb(s.memory.sys)}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function sourceText(g) {
+  if (g.source === 'manual') return 'Edited in this dashboard';
+  const x = g.git;
+  if (x.provider === 'url') return 'URL ' + x.path;
+  return `${x.provider === 'github' ? 'GitHub' : 'GitLab'} ${x.repo} @ ${x.ref} : ${x.path}`;
+}
+
+function groupCard(g) {
+  const st = g.state, members = g.members.map(agentOf).filter(Boolean);
+  const inSync = members.filter(a => syncState(a)?.cls === 'ok').length;
+  return `<div class="card">
+    <div class="card-head"><div><h2>${esc(g.name)}</h2><div class="sub">${esc(g.description || '')}</div></div>
+      <div class="actions">
+        <button data-action="sync-group" ${st.syncing ? 'disabled' : ''}>${st.syncing ? 'Syncing…' : g.source === 'git' ? 'Sync from git' : 'Push to agents'}</button>
+        <button data-action="edit-group">Edit</button>
+        <button class="danger" data-action="delete-group">Delete</button></div></div>
+    <div class="meta">
+      <span>Rules: <b>${esc(sourceText(g))}</b></span>
+      ${g.source === 'git' ? `<span>Sync: <b>${g.git.interval ? 'every ' + esc(g.git.interval) : 'manual'}</b></span>` : ''}
+      <span>Version: <b class="mono">${g.rules_hash ? esc(g.rules_hash) : 'none yet'}</b>${g.rules_hash ? ' · updated ' + ago(g.rules_updated_at) : ''}</span>
+      <span>Agents in sync: <b>${inSync}/${members.length}</b></span>
+      ${!zero(st.last_sync) ? `<span>Last sync: <b>${ago(st.last_sync)}</b> (${esc(st.trigger)})</span>` : ''}
+    </div>
+    ${st.last_error ? `<div class="pane" style="padding-top:0"><div class="msg bad">${esc(st.last_error)}</div></div>` : ''}
+    ${!g.rules_hash && g.source === 'manual' ? `<div class="pane" style="padding-top:0"><div class="msg info">This group has no rules yet. Open the <b>Rules</b> tab to write them.</div></div>` : ''}
+    <div class="tabs" data-tabs="group">
+      <button data-gtab="agents" class="${groupTab === 'agents' ? 'on' : ''}">Agents (${members.length})</button>
+      <button data-gtab="rules" class="${groupTab === 'rules' ? 'on' : ''}">Rules</button>
+    </div>
+    ${groupTab === 'agents' ? `
+      ${members.length ? `<div class="pane" style="padding-bottom:0"><div class="row" style="margin:0">
+        <button class="primary" data-action="connect" data-group="${esc(g.name)}">Connect agent</button>
+        ${data.agents.some(a => a.group !== g.name) ? `<button data-action="add-existing" data-group="${esc(g.name)}">Add an existing agent</button>` : ''}</div></div><div style="height:12px"></div>` : ''}
+      ${agentTable(members, false, g.name)}` : `
+      <div class="pane">
+        ${g.source === 'git' ? `<div class="msg info" style="margin:0 0 10px">These rules come from git and are read-only here. Change the file in the repository, then click <b>Sync from git</b>.</div>` : ''}
+        <textarea id="g-editor" spellcheck="false" ${g.source === 'git' ? 'readonly' : ''} placeholder="${g.source === 'git' ? 'Not synced yet' : ''}"></textarea>
+        <div class="row">
+          ${g.source === 'manual' ? `<button data-action="validate-group">Validate</button>
+            <button class="primary" data-action="save-group-rules">Save &amp; push to ${members.length} agent${members.length === 1 ? '' : 's'}</button>
+            <button data-action="reload-group-rules">Discard changes</button>` :
+            `<button data-action="preview-git">Show latest from git</button>`}
+          <span class="muted mono" id="g-hash"></span>
+        </div>
+        <div id="g-msg"></div><div id="g-preview"></div>
+      </div>`}
+  </div>`;
+}
+
+async function loadGroupRules(force) {
+  const key = 'group:' + view.name;
+  if (!force && editorDirty && editorKey === key) return;
+  const ed = $('#g-editor'); if (!ed) return;
+  try {
+    const { data: text, headers } = await api('GET', `/api/groups/${enc(view.name)}/rules`);
+    const g = groupOf(view.name);
+    ed.value = text || (g && g.source === 'manual' && !text ? '' : text);
+    $('#g-hash').textContent = headers.get('X-Rules-Hash') ? 'version ' + headers.get('X-Rules-Hash') : '';
+    editorDirty = false; editorKey = key;
+  } catch (e) { $('#g-msg').innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
+function pushSummary(state) {
+  const r = Object.entries(state.results || {});
+  if (!r.length) return 'No agents in this group yet.';
+  return r.map(([n, x]) => `${n}: ${x.ok ? x.action : 'FAILED: ' + x.error}`).join('\n');
+}
+
+// ---------- agent detail ----------
+function renderAgentDetail() {
+  const el = $('#agent-detail'); if (!el) return;
+  const a = selAgent && agentOf(selAgent);
+  if (!a) { el.innerHTML = ''; return; }
+  const tabs = ['overview', 'rules', 'events', 'test', 'settings'];
+  const names = { overview: 'Overview', rules: 'Rules', events: 'Events', test: 'Test a line', settings: 'Settings' };
+  el.innerHTML = `<div class="card">
+    <div class="card-head"><div><h2>${esc(a.name)}</h2><div class="sub mono">${esc(a.url)}</div></div>
+      <div class="actions"><button data-action="close-agent">Close</button></div></div>
+    <div class="tabs">${tabs.map(t => `<button data-atab="${t}" class="${agentTab === t ? 'on' : ''}">${names[t]}</button>`).join('')}</div>
+    <div class="pane" id="atab"></div></div>`;
+  ({ overview: tabOverview, rules: tabRules, events: tabEvents, test: tabTest, settings: tabSettings })[agentTab](a);
+}
+
+function tabOverview(a) {
+  const el = $('#atab');
+  if (!a.online) { el.innerHTML = `<div class="msg bad">Cannot reach this agent: ${esc(a.error)}</div><p class="muted">Check the URL and token under <b>Settings</b>.</p>`; return; }
+  const s = a.status;
+  const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  el.innerHTML = `<div class="grid">
+      ${stat('Heap in use', mb(s.memory.heap_inuse))}${stat('Memory from OS', mb(s.memory.sys))}
+      ${stat('Memory limit', s.memory.memory_limit > 0 && s.memory.memory_limit < 9e18 ? mb(s.memory.memory_limit) : 'none')}
+      ${stat('Alerts sent', s.webhooks.sent)}${stat('Webhook queue', s.webhooks.queued)}${stat('Suppression keys', s.suppress_keys)}
+    </div>
+    <div class="muted">Rules <code>${esc(s.rules_hash)}</code> loaded ${ago(s.rules_loaded_at)} from <b>${esc(s.rules_origin || '—')}</b></div>
+    <h3 class="sec">Rules</h3>
+    <div class="scroll"><table><thead><tr><th>Rule</th><th>Pattern</th><th>Suppression</th><th class="num">Matches</th><th class="num">Alerts</th><th class="num">Suppressed</th><th>Last match</th></tr></thead><tbody>
+    ${(s.rules || []).map(r => `<tr><td>${esc(r.name)}</td><td class="wrap"><code>${esc(r.pattern)}</code></td><td>${esc(r.suppress || 'off')}</td>
+      <td class="num">${r.matches}</td><td class="num">${r.alerts}</td><td class="num">${r.suppressed}</td><td>${ago(r.last_match)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No active rules</td></tr>'}
+    </tbody></table></div>
+    <h3 class="sec">Tailed files</h3>
+    <div class="scroll"><table><thead><tr><th>File</th><th>State</th><th class="num">Offset</th><th class="num">Lines read</th><th>Rules</th></tr></thead><tbody>
+    ${(s.files || []).map(f => `<tr><td class="wrap"><code>${esc(f.path)}</code></td>
+      <td>${f.open ? '<span class="badge ok">tailing</span>' : `<span class="badge warn" title="${esc(f.error)}">${f.error ? 'error' : 'waiting for file'}</span>`}</td>
+      <td class="num">${f.offset}</td><td class="num">${f.lines}</td><td class="wrap">${(f.rules || []).map(esc).join(', ')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No files</td></tr>'}
+    </tbody></table></div>`;
+}
+
+async function tabRules(a) {
+  const el = $('#atab');
+  const managed = !!a.group;
+  el.innerHTML = `${managed ? `<div class="msg info" style="margin:0 0 10px">This agent's rules are managed by group <b>${esc(a.group)}</b>. To change them, edit the group's rules or move the agent out of the group.</div>` : ''}
+    <textarea id="a-editor" spellcheck="false" ${managed ? 'readonly' : ''}></textarea>
+    <div class="row">${managed ? `<button data-nav="group" data-name="${esc(a.group)}">Open group ${esc(a.group)}</button>` : `
+      <button data-action="validate-agent">Validate</button><button class="primary" data-action="save-agent-rules">Save &amp; apply</button>
+      <button data-action="reload-agent-rules">Discard changes</button>`}<span class="muted mono" id="a-hash"></span></div><div id="a-msg"></div>`;
+  loadAgentRules(true);
+}
+
+async function loadAgentRules(force) {
+  const key = 'agent:' + selAgent;
+  if (!force && editorDirty && editorKey === key) return;
+  try {
+    const { data: text, headers } = await api('GET', `/api/agents/${enc(selAgent)}/rules`);
+    $('#a-editor').value = text; $('#a-hash').textContent = 'version ' + (headers.get('X-Rules-Hash') || '');
+    editorDirty = false; editorKey = key;
+  } catch (e) { $('#a-msg').innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
+async function tabEvents(a) {
+  const el = $('#atab');
+  try {
+    const { data: ev } = await api('GET', `/api/agents/${enc(a.name)}/events?limit=200`);
+    const cls = { alert: 'warn', webhook_error: 'bad', error: 'bad', rules: 'ok' };
+    el.innerHTML = ev.length ? `<div class="scroll"><table><thead><tr><th>Time</th><th>Type</th><th>Rule</th><th>Message</th></tr></thead><tbody>
+      ${ev.map(e => `<tr><td title="${esc(e.time)}">${new Date(e.time).toLocaleString()}</td><td><span class="badge ${cls[e.type] || ''}">${esc(e.type)}</span></td>
+        <td>${esc(e.rule)}</td><td class="wrap mono">${esc(e.message)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No events yet.</div>';
+  } catch (e) { el.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
+function tabTest(a) {
+  $('#atab').innerHTML = `<input type="text" id="t-line" placeholder="Paste a log line to see which of this agent's rules match it">
+    <div class="row"><button class="primary" data-action="run-test">Test</button></div><div id="t-msg"></div>`;
+}
+
+function tabSettings(a) {
+  $('#atab').innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+      <div class="stat"><div class="k">URL</div><div class="mono">${esc(a.url)}</div></div>
+      <div class="stat"><div class="k">Group</div><div>${a.group ? esc(a.group) : '<span class="muted">none</span>'}</div></div>
+      <div class="stat"><div class="k">Token</div><div>${a.has_token ? 'set' : '<span class="muted">none</span>'}</div></div>
+      <div class="stat"><div class="k">Connected</div><div>${ago(a.added_at)}</div></div></div>
+    <div class="row"><button class="primary" data-action="edit-agent">Edit connection / group</button>
+    <span class="spacer"></span><button class="danger" data-action="remove-agent">Remove from dashboard</button></div>
+    <p class="muted">Removing only disconnects the dashboard. The agent keeps running with its current rules.</p>`;
+}
+
+// ---------- refresh ----------
+async function refresh() {
+  try { data = (await api('GET', '/api/overview')).data; }
+  catch (e) { $('#summary').textContent = 'dashboard error: ' + e.message; return; }
+  if (document.querySelector('dialog[open]')) { renderNav(); return; }
+  // Keep focus/scroll and unsaved edits stable: re-render only if not editing.
+  const editing = editorDirty || document.activeElement?.matches('textarea, input');
+  if (editing) { renderNav(); return; }
+  render();
+}
+
+// ---------- dialogs ----------
+function groupOptions(selected) {
+  return `<option value="">No group (own rules)</option>` +
+    data.groups.map(g => `<option value="${esc(g.name)}" ${g.name === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+}
+
+function openAgentDialog(agent, group) {
+  editingAgent = agent || null;
+  const f = $('#f-agent'); f.reset();
+  f.group.innerHTML = groupOptions(agent ? agent.group : group);
+  $('#fa-msg').innerHTML = '';
+  $('#fa-title').textContent = agent ? 'Edit agent ' + agent.name : 'Connect agent';
+  $('#fa-save').textContent = agent ? 'Save' : 'Connect';
+  f.name.disabled = !!agent;
+  f.name.placeholder = 'from the agent'; // reset() does not reset placeholders
+  f.token.placeholder = agent && agent.has_token ? 'unchanged (enter a new token to replace it)' : "the agent's token";
+  if (agent) { f.name.value = agent.name; f.url.value = agent.url; f.insecure.checked = agent.insecure_skip_verify; }
+  delete f.dataset.force;
+  $('#dlg-agent').showModal(); (agent ? f.url : f.url).focus();
+}
+
+function agentForm() {
+  const f = $('#f-agent');
+  return { name: editingAgent ? editingAgent.name : f.name.value.trim(), url: f.url.value.trim(), token: f.token.value,
+    group: f.group.value, insecure_skip_verify: f.insecure.checked };
+}
+
+async function testConnection() {
+  const msg = $('#fa-msg');
+  msg.innerHTML = '<div class="msg info">Connecting…</div>';
+  try {
+    const { data: r } = await api('POST', '/api/agents/test', agentForm());
+    if (!r.ok) { msg.innerHTML = `<div class="msg bad">Cannot connect: ${esc(r.error)}</div>`; return; }
+    const s = r.status;
+    msg.innerHTML = `<div class="msg ok">Connected to "${esc(s.name)}" on host ${esc(s.host)} (version ${esc(s.version)}). It runs ${(s.rules || []).length} rules and tails ${(s.files || []).length} files.</div>`;
+    const f = $('#f-agent'); if (!editingAgent && !f.name.value) f.name.placeholder = s.name;
+  } catch (e) { msg.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
+async function saveAgent() {
+  const f = $('#f-agent'), msg = $('#fa-msg'), body = agentForm();
+  if (!body.url) { f.url.focus(); return; }
+  const g = body.group && groupOf(body.group);
+  if (editingAgent && body.group && body.group !== editingAgent.group && g?.rules_hash &&
+      !confirm(`Group "${body.group}" will replace this agent's current rules with the group's rules. Continue?`)) return;
+  if (!editingAgent && g?.rules_hash) { /* joining a group with rules: they will be pushed */ }
+  body.force = f.dataset.force === '1';
+  $('#fa-save').disabled = true;
+  try {
+    const { data: r } = editingAgent
+      ? await api('PUT', `/api/agents/${enc(editingAgent.name)}`, body)
+      : await api('POST', '/api/agents', body);
+    $('#dlg-agent').close();
+    let note = editingAgent ? `Saved ${r.name}` : `Connected ${r.name}`;
+    if (r.push) note += r.push.ok ? ` · group rules ${r.push.action}` : ` · pushing group rules failed: ${r.push.error}`;
+    toast(note, r.push && !r.push.ok);
+    await refresh();
+    // Show the agent where it now lives, with its details open.
+    go(body.group ? { kind: 'group', name: body.group } : { kind: view.kind === 'ungrouped' ? 'ungrouped' : 'all' });
+    selAgent = r.name; agentTab = 'overview'; render();
+  } catch (e) {
+    if (e.data && e.data.unreachable) {
+      msg.innerHTML = `<div class="msg bad">${esc(e.message)}</div><div class="row"><span class="muted">Is the agent not running yet?</span>
+        <button type="button" data-action="force-save">Save anyway</button></div>`;
+    } else msg.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`;
+  } finally { $('#fa-save').disabled = false; }
+}
+
+function openGroupDialog(group) {
+  editingGroup = group || null;
+  const f = $('#f-group'); f.reset();
+  $('#fg-msg').innerHTML = '';
+  $('#fg-title').textContent = group ? 'Edit group ' + group.name : 'New group';
+  $('#fg-save').textContent = group ? 'Save' : 'Create group';
+  f.name.disabled = !!group;
+  const online = data.agents.filter(a => a.online);
+  f.seed.innerHTML = `<option value="example">An example rule set</option><option value="empty">Nothing (empty)</option>` +
+    online.map(a => `<option value="agent:${esc(a.name)}">A copy of ${esc(a.name)}'s current rules</option>`).join('');
+  if (group) {
+    f.name.value = group.name; f.description.value = group.description || '';
+    f.source.value = group.source;
+    if (group.git) {
+      f.provider.value = group.git.provider; f.repo.value = group.git.repo || ''; f.ref.value = group.git.ref || '';
+      f.base_url.value = group.git.base_url || ''; f.interval.value = group.git.interval || '';
+      if (group.git.provider === 'url') f.rawurl.value = group.git.path; else f.path.value = group.git.path;
+      f.gtoken.placeholder = group.git.has_token ? 'unchanged (enter a new token to replace it)' : 'read-only token';
+    }
+  } else f.gtoken.placeholder = 'read-only token';
+  groupFormVisibility();
+  $('#dlg-group').showModal(); (group ? f.description : f.name).focus();
+}
+
+function groupFormVisibility() {
+  const f = $('#f-group'), git = f.source.value === 'git', url = f.provider.value === 'url';
+  $('#fg-git').hidden = !git;
+  $('#fg-manual').hidden = git || !!editingGroup;
+  document.querySelectorAll('#f-group [data-git=repo]').forEach(e => e.hidden = url);
+  document.querySelectorAll('#f-group [data-git=url]').forEach(e => e.hidden = !url);
+}
+
+async function saveGroup() {
+  const f = $('#f-group'), msg = $('#fg-msg');
+  const body = { name: f.name.value.trim(), description: f.description.value.trim(), source: f.source.value };
+  if (!body.name) { f.name.focus(); return; }
+  if (body.source === 'git') {
+    const url = f.provider.value === 'url';
+    body.git = { provider: f.provider.value, repo: url ? '' : f.repo.value.trim(), ref: url ? '' : f.ref.value.trim(),
+      path: url ? f.rawurl.value.trim() : f.path.value.trim(), base_url: url ? '' : f.base_url.value.trim(),
+      token: f.gtoken.value, interval: f.interval.value };
+  } else if (!editingGroup) {
+    const seed = f.seed.value;
+    if (seed === 'example') body.rules = EXAMPLE_RULES;
+    else if (seed.startsWith('agent:')) {
+      try { body.rules = (await api('GET', `/api/agents/${enc(seed.slice(6))}/rules`)).data; }
+      catch (e) { msg.innerHTML = `<div class="msg bad">Could not copy rules: ${esc(e.message)}</div>`; return; }
+    }
+  }
+  $('#fg-save').disabled = true;
+  msg.innerHTML = body.source === 'git' ? '<div class="msg info">Saving and fetching from git…</div>' : '';
+  try {
+    const { data: r } = editingGroup
+      ? await api('PUT', `/api/groups/${enc(editingGroup.name)}`, body)
+      : await api('POST', '/api/groups', body);
+    $('#dlg-group').close();
+    if (r.sync_error) toast(`Group saved, but syncing from git failed: ${r.sync_error}`, true);
+    else toast(editingGroup ? `Saved group ${r.name}` : `Created group ${r.name}`);
+    await refresh();
+    go({ kind: 'group', name: r.name });
+  } catch (e) { msg.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  finally { $('#fg-save').disabled = false; }
+}
+
+function addExisting(group) {
+  const candidates = data.agents.filter(a => a.group !== group);
+  const dlg = document.createElement('dialog');
+  dlg.innerHTML = `<form method="dialog"><h2>Add agents to ${esc(group)}</h2>
+    <p class="muted" style="margin:0">The group's rules replace each agent's current rules.</p>
+    <div style="display:grid;gap:6px;max-height:300px;overflow:auto">${candidates.map(a => `<label class="check"><input type="checkbox" value="${esc(a.name)}">
+      <b>${esc(a.name)}</b> <span class="muted">${a.group ? 'in ' + esc(a.group) : 'ungrouped'} · ${esc(a.url)}</span></label>`).join('')}</div>
+    <div class="foot"><button value="cancel">Cancel</button><button class="primary" value="ok">Add to group</button></div></form>`;
+  document.body.append(dlg); dlg.showModal();
+  dlg.addEventListener('close', async () => {
+    const names = [...dlg.querySelectorAll('input:checked')].map(i => i.value);
+    const ok = dlg.returnValue === 'ok'; dlg.remove();
+    if (!ok || !names.length) return;
+    for (const n of names) {
+      const a = agentOf(n);
+      try {
+        const { data: r } = await api('PUT', `/api/agents/${enc(n)}`, { url: a.url, group, insecure_skip_verify: a.insecure_skip_verify });
+        toast(`${n} added to ${group}` + (r.push ? (r.push.ok ? ` · rules ${r.push.action}` : ` · push failed: ${r.push.error}`) : ''), r.push && !r.push.ok);
+      } catch (e) { toast(`${n}: ${e.message}`, true); }
+    }
+    refresh();
+  });
+}
+
+// ---------- events ----------
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-action],[data-nav],[data-agent],[data-atab],[data-gtab]');
+  if (!t) return;
+  if (t.dataset.nav) { e.preventDefault(); return go(t.dataset.nav === 'group' ? { kind: 'group', name: t.dataset.name } : { kind: t.dataset.nav }); }
+  if (t.dataset.agent && !t.dataset.action) { selAgent = t.dataset.agent; agentTab = 'overview'; editorDirty = false; render();
+    $('#agent-detail')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
+  if (t.dataset.atab) { agentTab = t.dataset.atab; editorDirty = false; return renderAgentDetail(); }
+  if (t.dataset.gtab) { groupTab = t.dataset.gtab; editorDirty = false; return renderMain(); }
+
+  const g = view.kind === 'group' && groupOf(view.name);
+  const a = selAgent && agentOf(selAgent);
+  switch (t.dataset.action) {
+    case 'connect': return openAgentDialog(null, t.dataset.group || (view.kind === 'group' ? view.name : ''));
+    case 'new-group': return openGroupDialog();
+    case 'close': return t.closest('dialog').close();
+    case 'test-connection': return testConnection();
+    case 'save-agent': return saveAgent();
+    case 'force-save': $('#f-agent').dataset.force = '1'; return saveAgent();
+    case 'save-group': return saveGroup();
+    case 'add-existing': return addExisting(t.dataset.group);
+    case 'close-agent': selAgent = null; return render();
+    case 'edit-agent': return openAgentDialog(a);
+    case 'remove-agent':
+      if (!confirm(`Remove ${a.name} from the dashboard? The agent keeps running with its current rules.`)) return;
+      try { await api('DELETE', `/api/agents/${enc(a.name)}`); toast(`Removed ${a.name}`); selAgent = null; refresh(); }
+      catch (err) { toast(err.message, true); } return;
+    case 'edit-group': return openGroupDialog(g);
+    case 'delete-group':
+      if (!confirm(`Delete group ${g.name}? Its ${g.members.length} agent(s) become ungrouped and keep their current rules.`)) return;
+      try { await api('DELETE', `/api/groups/${enc(g.name)}`); toast(`Deleted group ${g.name}`); await refresh(); go({ kind: 'all' }); }
+      catch (err) { toast(err.message, true); } return;
+    case 'sync-group':
+      t.disabled = true; t.textContent = 'Syncing…';
+      try { const { data: st } = await api('POST', `/api/groups/${enc(g.name)}/sync`); toast('Synced: ' + pushSummary(st).replace(/\n/g, ' · ')); }
+      catch (err) { toast(err.message, true); }
+      editorDirty = false; return refresh();
+    case 'validate-group':
+      try { const { data: r } = await api('POST', `/api/groups/${enc(g.name)}/validate`, $('#g-editor').value, 'application/yaml');
+        $('#g-msg').innerHTML = `<div class="msg ok">Valid: ${r.rules} active rules.</div>`; }
+      catch (err) { $('#g-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+    case 'save-group-rules':
+      try { const { data: r } = await api('PUT', `/api/groups/${enc(g.name)}/rules`, $('#g-editor').value, 'application/yaml');
+        editorDirty = false;
+        await refresh(); // re-renders the tab, so show the result after it
+        $('#g-msg').innerHTML = `<div class="msg ok">Saved version ${esc(r.hash)} (${r.rules} active rules), applied without restarting:\n${esc(pushSummary(r.state))}</div>`; }
+      catch (err) { $('#g-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+    case 'reload-group-rules': $('#g-msg').innerHTML = ''; return loadGroupRules(true);
+    case 'preview-git':
+      try { const { data: text, headers } = await api('GET', `/api/groups/${enc(g.name)}/preview`);
+        const same = headers.get('X-Rules-Hash') === g.rules_hash;
+        $('#g-preview').innerHTML = `<h3 class="sec">Latest in git (version ${esc(headers.get('X-Rules-Hash'))}${same ? ', same as applied' : ', <b>not applied yet</b>'})</h3><pre class="preview mono">${esc(text)}</pre>`; }
+      catch (err) { $('#g-preview').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+    case 'validate-agent':
+      try { const { data: r } = await api('POST', `/api/agents/${enc(a.name)}/validate`, $('#a-editor').value, 'application/yaml');
+        $('#a-msg').innerHTML = `<div class="msg ok">Valid: ${r.rules} active rules.</div>`; }
+      catch (err) { $('#a-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+    case 'save-agent-rules':
+      try { const { data: r } = await api('PUT', `/api/agents/${enc(a.name)}/rules`, $('#a-editor').value, 'application/yaml');
+        editorDirty = false;
+        await refresh(); // re-renders the tab, so show the result after it
+        $('#a-msg').innerHTML = `<div class="msg ok">${r.unchanged ? 'No changes.' : `Applied without restarting: ${r.rules} active rules.`}</div>`; }
+      catch (err) { $('#a-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+    case 'reload-agent-rules': $('#a-msg').innerHTML = ''; return loadAgentRules(true);
+    case 'run-test':
+      try { const { data: r } = await api('POST', `/api/agents/${enc(a.name)}/test`, { line: $('#t-line').value });
+        $('#t-msg').innerHTML = r.matched && r.matched.length ? `<div class="msg ok">Matches: ${r.matched.map(esc).join(', ')}</div>` : '<div class="msg">No rule matches this line.</div>'; }
+      catch (err) { $('#t-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
+  }
+});
+document.addEventListener('input', e => { if (e.target.matches('#g-editor, #a-editor')) editorDirty = true; });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Tab' && e.target.matches('textarea:not([readonly])')) {
+    e.preventDefault(); const t = e.target; t.setRangeText('  ', t.selectionStart, t.selectionEnd, 'end'); editorDirty = true;
+  }
+  if (e.key === 'Enter' && e.target.id === 't-line') $('[data-action=run-test]').click();
+});
+$('#f-group').addEventListener('change', e => { if (e.target.name === 'source' || e.target.name === 'provider') groupFormVisibility(); });
+window.addEventListener('hashchange', () => { view = parseHash(); render(); });
+
+refresh();
+setInterval(() => { if ($('#auto').checked && !document.hidden) refresh(); }, 5000);
+</script>
+</body>
+</html>

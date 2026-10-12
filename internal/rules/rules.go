@@ -1,0 +1,303 @@
+// Package rules defines the alert rule file format shared by the agent and the
+// dashboard, and compiles it into a ready-to-use, immutable form.
+package rules
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"regexp"
+	"strings"
+	"text/template"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// File is the on-disk / on-the-wire rule document.
+type File struct {
+	Webhooks []Webhook `yaml:"webhooks" json:"webhooks"`
+	Rules    []Rule    `yaml:"rules" json:"rules"`
+}
+
+// Webhook is a named alert destination.
+type Webhook struct {
+	Name string `yaml:"name" json:"name"`
+	// URL may reference environment variables as ${VAR} so secrets stay out of git.
+	URL     string            `yaml:"url" json:"url"`
+	Method  string            `yaml:"method,omitempty" json:"method,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	// Template is an optional Go text/template rendering the request body.
+	// When empty a generic JSON payload is sent.
+	Template string   `yaml:"template,omitempty" json:"template,omitempty"`
+	Timeout  Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// Rule matches lines in one or more files.
+type Rule struct {
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Disabled    bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Files       []string          `yaml:"files" json:"files"`
+	Pattern     string            `yaml:"pattern" json:"pattern"`
+	Exclude     string            `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+	Severity    string            `yaml:"severity,omitempty" json:"severity,omitempty"`
+	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Webhooks    []string          `yaml:"webhooks" json:"webhooks"`
+	Suppress    *Suppress         `yaml:"suppress,omitempty" json:"suppress,omitempty"`
+}
+
+// Suppress limits how many alerts a rule may send per time window.
+type Suppress struct {
+	// Window is the suppression period. Zero disables suppression.
+	Window Duration `yaml:"window" json:"window"`
+	// MaxAlerts is how many alerts may fire per window (default 1).
+	MaxAlerts int `yaml:"max_alerts,omitempty" json:"max_alerts,omitempty"`
+	// GroupBy names a capture group in Pattern; each distinct value gets its
+	// own suppression window (e.g. per host or per error code).
+	GroupBy string `yaml:"group_by,omitempty" json:"group_by,omitempty"`
+	// Summary sends one "N more matches suppressed" alert when a window that
+	// suppressed anything closes. Defaults to true.
+	Summary *bool `yaml:"summary,omitempty" json:"summary,omitempty"`
+}
+
+// Duration is a time.Duration that (un)marshals as a string like "5m".
+type Duration time.Duration
+
+func (d Duration) D() time.Duration { return time.Duration(d) }
+
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	if n.Value == "" {
+		*d = 0
+		return nil
+	}
+	v, err := time.ParseDuration(n.Value)
+	if err != nil {
+		return fmt.Errorf("line %d: invalid duration %q", n.Line, n.Value)
+	}
+	*d = Duration(v)
+	return nil
+}
+
+func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + time.Duration(d).String() + `"`), nil
+}
+
+// Compiled is an immutable, validated rule set. It is safe for concurrent use.
+type Compiled struct {
+	Raw      []byte
+	Hash     string
+	Rules    []*CompiledRule
+	Webhooks map[string]*CompiledWebhook
+}
+
+type CompiledRule struct {
+	Rule
+	Re        *regexp.Regexp
+	ExcludeRe *regexp.Regexp
+	GroupIdx  int        // index of Suppress.GroupBy in Re, or -1
+	Pre       *Prefilter // cheap pre-check before Re; nil when none applies
+	Hooks     []*CompiledWebhook
+}
+
+// SuppressWindow returns the suppression window, or 0 when disabled.
+func (r *CompiledRule) SuppressWindow() time.Duration {
+	if r.Suppress == nil {
+		return 0
+	}
+	return r.Suppress.Window.D()
+}
+
+func (r *CompiledRule) MaxAlerts() int {
+	if r.Suppress == nil || r.Suppress.MaxAlerts <= 0 {
+		return 1
+	}
+	return r.Suppress.MaxAlerts
+}
+
+func (r *CompiledRule) SendSummary() bool {
+	return r.Suppress == nil || r.Suppress.Summary == nil || *r.Suppress.Summary
+}
+
+type CompiledWebhook struct {
+	Webhook
+	Tmpl *template.Template
+}
+
+// Hash returns the short content hash used to identify a rule set version.
+func Hash(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// Options tune validation.
+type Options struct {
+	// AllowUnresolvedEnv skips URL checks for webhook URLs that contain
+	// ${VAR} references. The dashboard validates with this set, because those
+	// variables only exist in the agents' environments.
+	AllowUnresolvedEnv bool
+}
+
+// Parse validates and compiles a YAML rule document.
+func Parse(raw []byte) (*Compiled, error) { return ParseWith(raw, Options{}) }
+
+// ParseWith is Parse with options.
+func ParseWith(raw []byte, opts Options) (*Compiled, error) {
+	var f File
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	// io.EOF means an empty document, which is a valid (empty) rule set.
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse rules: %w", err)
+	}
+	return compile(raw, &f, opts)
+}
+
+// Compile validates f. raw is kept for hashing and round-tripping.
+func Compile(raw []byte, f *File) (*Compiled, error) { return compile(raw, f, Options{}) }
+
+func compile(raw []byte, f *File, opts Options) (*Compiled, error) {
+	c := &Compiled{
+		Raw:      raw,
+		Hash:     Hash(raw),
+		Webhooks: make(map[string]*CompiledWebhook, len(f.Webhooks)),
+	}
+	var errs []error
+
+	for i, w := range f.Webhooks {
+		if w.Name == "" {
+			errs = append(errs, fmt.Errorf("webhooks[%d]: name is required", i))
+			continue
+		}
+		if _, dup := c.Webhooks[w.Name]; dup {
+			errs = append(errs, fmt.Errorf("webhook %q: duplicate name", w.Name))
+			continue
+		}
+		skipURL := opts.AllowUnresolvedEnv && envRef.MatchString(w.URL)
+		w.URL = ExpandEnv(w.URL)
+		for k, v := range w.Headers {
+			w.Headers[k] = ExpandEnv(v)
+		}
+		if u, err := url.Parse(w.URL); !skipURL && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "") {
+			errs = append(errs, fmt.Errorf("webhook %q: url must be an absolute http(s) URL", w.Name))
+		}
+		if w.Method == "" {
+			w.Method = "POST"
+		}
+		if w.Timeout <= 0 {
+			w.Timeout = Duration(10 * time.Second)
+		}
+		cw := &CompiledWebhook{Webhook: w}
+		if w.Template != "" {
+			t, err := template.New(w.Name).Funcs(TemplateFuncs).Parse(w.Template)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("webhook %q: template: %w", w.Name, err))
+			}
+			cw.Tmpl = t
+		}
+		c.Webhooks[w.Name] = cw
+	}
+
+	seen := map[string]bool{}
+	for i, r := range f.Rules {
+		where := fmt.Sprintf("rules[%d]", i)
+		if r.Name != "" {
+			where = fmt.Sprintf("rule %q", r.Name)
+		}
+		if r.Name == "" {
+			errs = append(errs, fmt.Errorf("%s: name is required", where))
+		} else if seen[r.Name] {
+			errs = append(errs, fmt.Errorf("%s: duplicate name", where))
+		}
+		seen[r.Name] = true
+		if len(r.Files) == 0 {
+			errs = append(errs, fmt.Errorf("%s: at least one file is required", where))
+		}
+		if r.Pattern == "" {
+			errs = append(errs, fmt.Errorf("%s: pattern is required", where))
+		}
+		if len(r.Webhooks) == 0 {
+			errs = append(errs, fmt.Errorf("%s: at least one webhook is required", where))
+		}
+		cr := &CompiledRule{Rule: r, GroupIdx: -1}
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: pattern: %w", where, err))
+		}
+		cr.Re = re
+		if re != nil {
+			cr.Pre = NewPrefilter(r.Pattern)
+		}
+		if r.Exclude != "" {
+			ex, err := regexp.Compile(r.Exclude)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: exclude: %w", where, err))
+			}
+			cr.ExcludeRe = ex
+		}
+		if s := r.Suppress; s != nil {
+			if s.Window < 0 {
+				errs = append(errs, fmt.Errorf("%s: suppress.window must not be negative", where))
+			}
+			if s.MaxAlerts < 0 {
+				errs = append(errs, fmt.Errorf("%s: suppress.max_alerts must not be negative", where))
+			}
+			if s.GroupBy != "" && re != nil {
+				cr.GroupIdx = re.SubexpIndex(s.GroupBy)
+				if cr.GroupIdx < 0 {
+					errs = append(errs, fmt.Errorf("%s: suppress.group_by %q is not a named group in pattern (use (?P<%s>...))", where, s.GroupBy, s.GroupBy))
+				}
+			}
+		}
+		for _, name := range r.Webhooks {
+			w, ok := c.Webhooks[name]
+			if !ok {
+				errs = append(errs, fmt.Errorf("%s: unknown webhook %q", where, name))
+				continue
+			}
+			cr.Hooks = append(cr.Hooks, w)
+		}
+		if !r.Disabled {
+			c.Rules = append(c.Rules, cr)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return c, nil
+}
+
+// ExpandEnv expands ${VAR} references only (not bare $VAR) so literal dollar
+// signs in URLs survive.
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+func ExpandEnv(s string) string {
+	return envRef.ReplaceAllStringFunc(s, func(m string) string {
+		return os.Getenv(m[2 : len(m)-1])
+	})
+}
+
+// TemplateFuncs are available inside webhook templates.
+var TemplateFuncs = template.FuncMap{
+	// json renders a value as a JSON string literal, safe to embed in a JSON body.
+	"json": func(v any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	},
+	"upper": strings.ToUpper,
+	"lower": strings.ToLower,
+	"trunc": func(n int, s string) string {
+		if len(s) <= n {
+			return s
+		}
+		return s[:n] + "…"
+	},
+}

@@ -1,0 +1,72 @@
+# grepalert demo stack.
+#
+#   docker compose up -d --build
+#   dashboard:      http://localhost:9400   (admin / demo)
+#   received alerts: http://localhost:9599
+#
+name: grepalert-demo
+
+x-agent: &agent
+  build: { context: ../.., target: agent }
+  image: grepalert-agent:dev
+  restart: unless-stopped
+  environment:
+    GREPALERT_AGENT_TOKEN: ${GREPALERT_AGENT_TOKEN}
+    WEBHOOK_URL: http://webhook-sink:9599/hook   # secrets/URLs stay out of the rules repo
+  mem_limit: 64m                                 # hard cap; the agent's soft limit is 32MiB
+  depends_on: [loggen, webhook-sink]
+
+services:
+  # Writes /var/log/demo/app.log and access.log with occasional errors.
+  loggen:
+    image: alpine:3.22
+    command: ["sh", "/loggen.sh"]
+    volumes:
+      - ./loggen.sh:/loggen.sh:ro
+      - logs:/var/log/demo
+    restart: unless-stopped
+
+  agent-1:
+    <<: *agent
+    volumes:
+      - ./config/agent-1.yaml:/etc/grepalert/agent.yaml:ro
+      - logs:/var/log/demo:ro
+      - agent1-data:/var/lib/grepalert
+
+  agent-2:
+    <<: *agent
+    # Seed the rules once; after that the dashboard owns them.
+    entrypoint: ["sh", "-c", "[ -f /var/lib/grepalert/rules.yaml ] || cp /seed/rules.yaml /var/lib/grepalert/rules.yaml; exec grepalert-agent -config /etc/grepalert/agent.yaml"]
+    volumes:
+      - ./config/agent-2.yaml:/etc/grepalert/agent.yaml:ro
+      - ./config/agent-2-rules.yaml:/seed/rules.yaml:ro
+      - logs:/var/log/demo:ro
+      - agent2-data:/var/lib/grepalert
+
+  dashboard:
+    build: { context: ../.., target: dashboard }
+    image: grepalert-dashboard:dev
+    restart: unless-stopped
+    environment:
+      GREPALERT_AGENT_TOKEN: ${GREPALERT_AGENT_TOKEN}
+      GREPALERT_DASHBOARD_PASSWORD: ${GREPALERT_DASHBOARD_PASSWORD}
+    volumes:
+      - ./config/dashboard.yaml:/etc/grepalert/dashboard.yaml:ro
+      - dashboard-data:/var/lib/grepalert-dashboard
+    ports: ["9400:9400"]
+    depends_on: [agent-1, agent-2, webhook-sink]
+
+  # Demo helper: shows received alerts and serves git-repo/ as a fake git remote.
+  webhook-sink:
+    build: { context: ../.., target: webhook-sink }
+    image: grepalert-webhook-sink:dev
+    restart: unless-stopped
+    volumes:
+      - ./git-repo:/repo:ro
+    ports: ["9599:9599"]
+
+volumes:
+  logs:
+  agent1-data:
+  agent2-data:
+  dashboard-data:

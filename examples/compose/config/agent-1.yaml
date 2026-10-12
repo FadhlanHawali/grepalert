@@ -1,0 +1,9 @@
+# agent-1 starts with no rules. Connect it in the dashboard and put it in a
+# group; the group's rules are pushed to it.
+name: app-server-1
+listen: ":9300"
+token: ${GREPALERT_AGENT_TOKEN}
+rules_file: /var/lib/grepalert/rules.yaml
+state_file: /var/lib/grepalert/state.json
+start_from: end
+memory_limit: 32MiB

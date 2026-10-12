@@ -1,0 +1,8 @@
+/bin/
+/dist/
+*.exe
+/agent.yaml
+/dashboard.yaml
+/rules.yaml
+grepalert.state.json
+dashboard-data.json

@@ -1,0 +1,5 @@
+.git
+bin
+dist
+*.exe
+**/grepalert.state.json

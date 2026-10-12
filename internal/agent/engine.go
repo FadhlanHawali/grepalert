@@ -1,0 +1,261 @@
+package agent
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/fadhlanhawali/grepalert/internal/rules"
+)
+
+// Alert is what gets delivered to a webhook.
+type Alert struct {
+	Kind        string            `json:"kind"` // "match" or "summary"
+	Agent       string            `json:"agent"`
+	Host        string            `json:"host"`
+	Rule        string            `json:"rule"`
+	Description string            `json:"description,omitempty"`
+	Severity    string            `json:"severity,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	File        string            `json:"file"`
+	Line        string            `json:"line"`
+	Groups      map[string]string `json:"groups,omitempty"`
+	GroupKey    string            `json:"group_key,omitempty"`
+	Time        time.Time         `json:"time"`
+	// Suppressed is how many matches were swallowed by suppression. On a
+	// "summary" alert it is the total for the window that just closed.
+	Suppressed int `json:"suppressed"`
+	// Text is a ready-made human readable message.
+	Text string `json:"text"`
+}
+
+// maxSuppressKeys bounds the suppression table. With group_by on a
+// high-cardinality capture (e.g. request IDs) the table could otherwise grow
+// without limit; past this size new keys share one overflow bucket per rule.
+const maxSuppressKeys = 10000
+
+const overflowKey = "\x00overflow"
+
+type suppressKey struct{ rule, group string }
+
+type suppressState struct {
+	start      time.Time
+	window     time.Duration
+	sent       int
+	suppressed int
+	lastLine   string
+	lastFile   string
+	rule       *rules.CompiledRule
+}
+
+// RuleStats are per-rule counters exposed to the dashboard.
+type RuleStats struct {
+	Matches    uint64    `json:"matches"`
+	Alerts     uint64    `json:"alerts"`
+	Suppressed uint64    `json:"suppressed"`
+	LastMatch  time.Time `json:"last_match,omitempty"`
+}
+
+// engine evaluates lines against the active rule set and applies suppression.
+type engine struct {
+	agentName, host string
+	notify          func(Alert, *rules.CompiledRule)
+	events          *ring
+
+	snap atomic.Pointer[snapshot]
+
+	mu       sync.Mutex
+	suppress map[suppressKey]*suppressState
+	stats    map[string]*RuleStats
+
+	now func() time.Time
+}
+
+// snapshot is an immutable view of the rule set plus the file→rules index.
+// Tailers read it lock-free; reloads swap it atomically.
+type snapshot struct {
+	rules  *rules.Compiled
+	byFile map[string][]*rules.CompiledRule
+}
+
+func newEngine(agentName, host string, events *ring, notify func(Alert, *rules.CompiledRule)) *engine {
+	e := &engine{
+		agentName: agentName,
+		host:      host,
+		notify:    notify,
+		events:    events,
+		suppress:  map[suppressKey]*suppressState{},
+		stats:     map[string]*RuleStats{},
+		now:       time.Now,
+	}
+	e.snap.Store(&snapshot{rules: &rules.Compiled{}, byFile: map[string][]*rules.CompiledRule{}})
+	return e
+}
+
+// setSnapshot installs a new rule set and drops state of rules that no longer exist.
+func (e *engine) setSnapshot(s *snapshot) {
+	old := e.snap.Swap(s)
+	if old != nil && old.rules == s.rules {
+		return // only the file index changed (glob re-scan)
+	}
+	live := map[string]*rules.CompiledRule{}
+	for _, r := range s.rules.Rules {
+		live[r.Name] = r
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, st := range e.suppress {
+		r, ok := live[k.rule]
+		if !ok {
+			delete(e.suppress, k)
+			continue
+		}
+		st.rule = r // keep the window running, but with the new definition
+	}
+	for name := range e.stats {
+		if _, ok := live[name]; !ok {
+			delete(e.stats, name)
+		}
+	}
+}
+
+// process is called by tailers for every line. It allocates only on a match.
+func (e *engine) process(path string, line []byte) {
+	s := e.snap.Load()
+	for _, r := range s.byFile[path] {
+		if r.Pre != nil && !r.Pre.MayMatch(line) {
+			continue
+		}
+		m := r.Re.FindSubmatchIndex(line)
+		if m == nil {
+			continue
+		}
+		if r.ExcludeRe != nil && r.ExcludeRe.Match(line) {
+			continue
+		}
+		e.match(r, path, line, m)
+	}
+}
+
+func (e *engine) match(r *rules.CompiledRule, path string, line []byte, m []int) {
+	now := e.now()
+	group := ""
+	if r.GroupIdx > 0 && m[2*r.GroupIdx] >= 0 {
+		group = string(line[m[2*r.GroupIdx]:m[2*r.GroupIdx+1]])
+	}
+
+	e.mu.Lock()
+	st := e.stats[r.Name]
+	if st == nil {
+		st = &RuleStats{}
+		e.stats[r.Name] = st
+	}
+	st.Matches++
+	st.LastMatch = now
+
+	carried := 0
+	if win := r.SuppressWindow(); win > 0 {
+		key := suppressKey{r.Name, group}
+		ss := e.suppress[key]
+		if ss == nil && len(e.suppress) >= maxSuppressKeys {
+			key.group = overflowKey
+			ss = e.suppress[key]
+		}
+		switch {
+		case ss == nil || now.Sub(ss.start) >= win:
+			if ss != nil {
+				carried = ss.suppressed
+			}
+			e.suppress[key] = &suppressState{start: now, window: win, sent: 1, rule: r}
+		case ss.sent < r.MaxAlerts():
+			ss.sent++
+		default:
+			ss.suppressed++
+			ss.lastLine = string(line)
+			ss.lastFile = path
+			st.Suppressed++
+			e.mu.Unlock()
+			return
+		}
+	}
+	st.Alerts++
+	e.mu.Unlock()
+
+	a := e.newAlert("match", r, path, string(line), now)
+	a.GroupKey = group
+	a.Suppressed = carried
+	if len(r.Re.SubexpNames()) > 1 {
+		a.Groups = map[string]string{}
+		for i, name := range r.Re.SubexpNames() {
+			if name != "" && m[2*i] >= 0 {
+				a.Groups[name] = string(line[m[2*i]:m[2*i+1]])
+			}
+		}
+	}
+	e.dispatch(a, r)
+}
+
+// sweep closes expired suppression windows, emitting summary alerts for windows
+// that swallowed matches, and frees their state.
+func (e *engine) sweep() {
+	now := e.now()
+	var summaries []Alert
+	var rs []*rules.CompiledRule
+
+	e.mu.Lock()
+	for k, ss := range e.suppress {
+		if now.Sub(ss.start) < ss.window {
+			continue
+		}
+		delete(e.suppress, k)
+		if ss.suppressed > 0 && ss.rule.SendSummary() {
+			a := e.newAlert("summary", ss.rule, ss.lastFile, ss.lastLine, now)
+			a.GroupKey = k.group
+			a.Suppressed = ss.suppressed
+			summaries = append(summaries, a)
+			rs = append(rs, ss.rule)
+		}
+	}
+	e.mu.Unlock()
+
+	for i := range summaries {
+		e.dispatch(summaries[i], rs[i])
+	}
+}
+
+func (e *engine) newAlert(kind string, r *rules.CompiledRule, path, line string, now time.Time) Alert {
+	return Alert{
+		Kind:        kind,
+		Agent:       e.agentName,
+		Host:        e.host,
+		Rule:        r.Name,
+		Description: r.Description,
+		Severity:    r.Severity,
+		Labels:      r.Labels,
+		File:        path,
+		Line:        line,
+		Time:        now,
+	}
+}
+
+func (e *engine) dispatch(a Alert, r *rules.CompiledRule) {
+	a.Text = alertText(a)
+	e.events.add(Event{Time: a.Time, Type: "alert", Rule: a.Rule, File: a.File, Message: a.Text})
+	e.notify(a, r)
+}
+
+func (e *engine) ruleStats() map[string]RuleStats {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]RuleStats, len(e.stats))
+	for k, v := range e.stats {
+		out[k] = *v
+	}
+	return out
+}
+
+func (e *engine) suppressKeys() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.suppress)
+}

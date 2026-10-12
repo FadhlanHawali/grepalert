@@ -1,0 +1,6 @@
+# Every load-test VM runs the same agent config; name defaults to the hostname.
+listen: ":9300"
+token: loadtest-token
+rules_file: /var/lib/grepalert/rules.yaml
+state_file: /var/lib/grepalert/state.json
+memory_limit: 32MiB

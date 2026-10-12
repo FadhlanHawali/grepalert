@@ -1,0 +1,22 @@
+webhooks:
+  - name: sink
+    url: http://webhook-sink:9599/hook/fleet
+    template: '{"text": {{ json .Text }}}'
+rules:
+  - name: errors
+    files: ["/var/log/app/*.log"]
+    pattern: 'ERROR service=(?P<svc>\w+) code=(?P<code>\w+)'
+    severity: warning
+    webhooks: [sink]
+    suppress: {window: 1m, max_alerts: 1, group_by: code}
+  - name: panics
+    files: ["/var/log/app/*.log"]
+    pattern: '(?i)panic|fatal|segfault'
+    severity: critical
+    webhooks: [sink]
+    suppress: {window: 1m}
+  - name: very-slow
+    files: ["/var/log/app/*.log"]
+    pattern: 'took=(?P<ms>[5-9]\d{3,})ms'
+    webhooks: [sink]
+    suppress: {window: 1m}
