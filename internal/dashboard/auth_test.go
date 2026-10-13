@@ -108,7 +108,8 @@ func TestLocalLoginAndSessions(t *testing.T) {
 		t.Fatalf("index without sign-in: %d %s", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp, _ = anon.Get(h.ts.URL + "/login")
-	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") {
+	// 503 when the UI was not built into this test binary.
+	if (resp.StatusCode != 200 && resp.StatusCode != http.StatusServiceUnavailable) || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") {
 		t.Fatalf("login page: %d csp=%q", resp.StatusCode, resp.Header.Get("Content-Security-Policy"))
 	}
 

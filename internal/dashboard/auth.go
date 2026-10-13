@@ -139,10 +139,10 @@ func (s *Server) checkPassword(user, pw string) bool {
 // isPublic lists paths reachable without signing in.
 func isPublic(path string) bool {
 	switch path {
-	case "/login", "/login.js", "/app.css", "/api/auth/config", "/auth/local", "/auth/oidc", "/auth/callback", "/healthz":
+	case "/login", "/api/auth/config", "/auth/local", "/auth/oidc", "/auth/callback", "/healthz":
 		return true
 	}
-	return false
+	return isUIAsset(path)
 }
 
 // securityHeaders hardens every response. The UI loads only its own files

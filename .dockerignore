@@ -3,3 +3,5 @@ bin
 dist
 *.exe
 **/grepalert.state.json
+ui/node_modules
+internal/dashboard/web/dist

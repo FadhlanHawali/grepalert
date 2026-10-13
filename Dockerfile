@@ -3,11 +3,20 @@
 #   docker build --target dashboard -t grepalert-dashboard .
 ARG GO_VERSION=1.27.2
 
+# The dashboard's web UI, embedded into its binary.
+FROM node:22-alpine AS ui
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=ui /src/internal/dashboard/web/dist ./internal/dashboard/web/dist
 ARG VERSION=0.1.0
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X github.com/fadhlanhawali/grepalert/internal/agent.Version=${VERSION}" \

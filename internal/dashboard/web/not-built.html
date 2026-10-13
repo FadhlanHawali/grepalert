@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>grepalert: UI not built</title></head>
+<body style="font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 16px">
+<h1>The dashboard UI was not built into this binary</h1>
+<p>The API works, but the web UI is missing. Build it, then build the dashboard again:</p>
+<pre style="background:#f3f5f8;padding:12px;border-radius:6px">make build        # builds the UI (needs Node.js) and the binaries</pre>
+<p>or by hand:</p>
+<pre style="background:#f3f5f8;padding:12px;border-radius:6px">cd ui &amp;&amp; npm ci &amp;&amp; npm run build &amp;&amp; cd ..
+go build ./cmd/grepalert-dashboard</pre>
+<p>Release binaries and the Docker image already include the UI.</p>
+</body>
+</html>

@@ -59,7 +59,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListBindings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"bindings": s.store.Bindings(), "config_admins": s.bootstrapAdmins()})
+	writeJSON(w, http.StatusOK, map[string]any{"bindings": orEmpty(s.store.Bindings()), "config_admins": orEmpty(s.bootstrapAdmins())})
 }
 
 func (s *Server) handleAddBinding(w http.ResponseWriter, r *http.Request) {

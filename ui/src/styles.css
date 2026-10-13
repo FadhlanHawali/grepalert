@@ -103,7 +103,7 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: 
 }
 
 /* sign-in page */
-body.login-page { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.login-page { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
 .login-box { width: min(380px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 28px; display: grid; gap: 14px; }
 .login-box h1 { margin: 0; font-size: 22px; }
 .login-box h1 span { color: var(--accent); }

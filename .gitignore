@@ -8,3 +8,6 @@ grepalert.state.json
 dashboard-data.json
 audit.log
 audit.log.*
+# Built web UI (make ui); embedded into the dashboard binary
+/internal/dashboard/web/dist/
+/ui/node_modules/

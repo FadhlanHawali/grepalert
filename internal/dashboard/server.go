@@ -7,12 +7,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -23,9 +21,6 @@ import (
 
 	"github.com/fadhlanhawali/grepalert/internal/rules"
 )
-
-//go:embed web
-var webFS embed.FS
 
 const maxProxyBody = 2 << 20
 
@@ -163,11 +158,7 @@ func (c *agentClient) status(ctx context.Context) (json.RawMessage, error) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	static, _ := fs.Sub(webFS, "web")
-	mux.Handle("GET /", http.FileServerFS(static))
-	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFileFS(w, r, static, "login.html")
-	})
+	mux.Handle("GET /", uiHandler())
 
 	// Sign-in (public paths are listed in isPublic).
 	mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
