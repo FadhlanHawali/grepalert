@@ -40,6 +40,7 @@ func main() {
 
 	s := dashboard.New(cfg, store, log)
 	go s.RunReconciler(ctx)
+	go s.RunFleet(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,

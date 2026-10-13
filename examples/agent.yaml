@@ -5,6 +5,7 @@ name: web-01                    # defaults to the hostname
 #   url: https://grepalert.example.com
 #   enrollment_token: ${GREPALERT_ENROLL_TOKEN}   # used once, at first start
 #   # ca_file: /etc/grepalert/ca.pem             # private CA for the dashboard
+#   # fallback_after: 15s                         # send alerts directly if the dashboard is unreachable this long
 # labels:                                         # dashboard groups can auto-add by label
 #   role: web
 #   env: prod

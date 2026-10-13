@@ -16,6 +16,9 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+
+	"github.com/fadhlanhawali/grepalert/internal/alert"
+	"github.com/fadhlanhawali/grepalert/internal/rules"
 	"time"
 )
 
@@ -29,6 +32,9 @@ type DashboardConfig struct {
 	EnrollmentToken    string `yaml:"enrollment_token"`
 	CAFile             string `yaml:"ca_file"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
+	// FallbackAfter: when the dashboard has not been reached for this long,
+	// alerts are delivered directly instead of through it (default 15s).
+	FallbackAfter rules.Duration `yaml:"fallback_after"`
 }
 
 // identity is the credential the dashboard issued at enrollment.
@@ -89,7 +95,30 @@ type connector struct {
 	resp    chan *tunnelResponse
 	sem     chan struct{}
 	state   atomic.Pointer[DashboardStatus]
+
+	outbox     chan routedAlert // alerts waiting to be handed to the dashboard
+	started    time.Time
+	alertsDone chan struct{}
+	silences   atomic.Pointer[[]Silence]
+	fallback   func(a Alert, hooks []*alert.Hook) // direct delivery
 }
+
+// routedAlert is an alert plus its resolved webhooks, as sent to the dashboard.
+type routedAlert struct {
+	Alert Alert         `json:"alert"`
+	Hooks []*alert.Hook `json:"hooks"`
+}
+
+// Silence is an active dashboard silence that applies to this agent. Rules
+// empty means every rule.
+type Silence struct {
+	ID     string    `json:"id"`
+	Rules  []string  `json:"rules,omitempty"`
+	EndsAt time.Time `json:"ends_at"`
+}
+
+// defaultFallbackAfter: see DashboardConfig.FallbackAfter.
+const defaultFallbackAfter = 15 * time.Second
 
 func newConnector(a *Agent) (*connector, error) {
 	cfg := a.cfg.Dashboard
@@ -120,6 +149,10 @@ func newConnector(a *Agent) (*connector, error) {
 		handler: a.api(),
 		resp:    make(chan *tunnelResponse, 64),
 		sem:     make(chan struct{}, tunnelWorkers),
+
+		outbox:     make(chan routedAlert, 1000),
+		started:    time.Now(),
+		alertsDone: make(chan struct{}),
 	}
 	c.state.Store(&DashboardStatus{URL: c.base})
 	return c, nil
@@ -146,6 +179,7 @@ func (c *connector) setState(connected bool, err error) {
 
 func (c *connector) run(ctx context.Context) {
 	go c.respond(ctx)
+	go c.alertLoop(ctx)
 	c.id.Store(c.loadIdentity())
 	backoff := time.Second
 	for ctx.Err() == nil {
@@ -270,6 +304,7 @@ func (c *connector) poll(ctx context.Context) ([]*tunnelRequest, error) {
 	defer resp.Body.Close()
 	var out struct {
 		Requests []*tunnelRequest `json:"requests"`
+		Silences []Silence        `json:"silences"`
 		Error    string           `json:"error"`
 		Code     string           `json:"code"`
 	}
@@ -283,6 +318,7 @@ func (c *connector) poll(ctx context.Context) ([]*tunnelRequest, error) {
 	}
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		c.silences.Store(&out.Silences)
 		return out.Requests, nil
 	case out.Code == "unknown_agent":
 		return nil, errUnknownAgent
@@ -382,4 +418,120 @@ func (c *connector) post(ctx context.Context, path, cred string, body []byte, ou
 		}
 	}
 	return resp.StatusCode, nil
+}
+
+// reachable reports whether alerts should go to the dashboard right now. Right
+// after start it is true until the first connection (or fallback_after), so
+// alerts found while starting up wait for the dashboard instead of bypassing it.
+func (c *connector) reachable() bool {
+	after := c.cfg.FallbackAfter.D()
+	if after <= 0 {
+		after = defaultFallbackAfter
+	}
+	st := c.state.Load()
+	if st.LastContact.IsZero() {
+		return time.Since(c.started) < after
+	}
+	return c.id.Load() != nil && (st.Connected || time.Since(st.LastContact) < after)
+}
+
+// offer hands an alert to the dashboard. It returns false (deliver it
+// directly) when the dashboard is unreachable or the outbox is full.
+func (c *connector) offer(a Alert, hooks []*alert.Hook) bool {
+	if !c.reachable() {
+		return false
+	}
+	select {
+	case c.outbox <- routedAlert{Alert: a, Hooks: hooks}:
+		return true
+	default:
+		return false
+	}
+}
+
+// silenced reports whether an active dashboard silence covers rule.
+func (c *connector) silenced(rule string) bool {
+	p := c.silences.Load()
+	if p == nil {
+		return false
+	}
+	now := time.Now()
+	for _, s := range *p {
+		if now.After(s.EndsAt) {
+			continue
+		}
+		if len(s.Rules) == 0 {
+			return true
+		}
+		for _, r := range s.Rules {
+			if r == rule {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// alertLoop sends queued alerts to the dashboard in batches.
+func (c *connector) alertLoop(ctx context.Context) {
+	defer close(c.alertsDone)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case r := <-c.outbox:
+			c.sendAlerts(ctx, c.batch(r))
+		}
+	}
+}
+
+func (c *connector) batch(first routedAlert) []routedAlert {
+	b := []routedAlert{first}
+	for len(b) < 200 {
+		select {
+		case r := <-c.outbox:
+			b = append(b, r)
+		default:
+			return b
+		}
+	}
+	return b
+}
+
+// sendAlerts posts a batch to the dashboard, retrying while the dashboard
+// still counts as reachable; after that the alerts are delivered directly, so
+// none are lost.
+func (c *connector) sendAlerts(ctx context.Context, batch []routedAlert) {
+	body, _ := json.Marshal(map[string]any{"alerts": batch})
+	for attempt := 0; ctx.Err() == nil; attempt++ {
+		if id := c.id.Load(); id != nil {
+			code, err := c.post(ctx, "/agent/v1/alerts", id.AgentID+"."+id.Secret, body, nil)
+			if err == nil && code < 300 {
+				return
+			}
+		}
+		if attempt >= 2 && !c.reachable() {
+			break
+		}
+		sleepCtx(ctx, 500*time.Millisecond)
+	}
+	for _, r := range batch {
+		c.fallback(r.Alert, r.Hooks)
+	}
+}
+
+// flushAlerts runs at shutdown, after alertLoop stopped: alerts still queued
+// go to the dashboard if it answers quickly, otherwise directly.
+func (c *connector) flushAlerts() {
+	<-c.alertsDone
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		select {
+		case r := <-c.outbox:
+			c.sendAlerts(ctx, c.batch(r))
+		default:
+			return
+		}
+	}
 }

@@ -42,6 +42,8 @@ type Server struct {
 	tunMu   sync.Mutex
 	tunnels map[string]*tunnel // keyed by connected agent ID
 
+	fleet *fleet // fleet dedupe, silences, agent-down alerts, history
+
 	stopping     chan struct{} // closed by Shutdown to release held polls
 	stoppingOnce sync.Once
 }
@@ -53,7 +55,7 @@ type agentClient struct {
 
 func New(cfg Config, store *Store, log *slog.Logger) *Server {
 	cfg.setDefaults()
-	return &Server{
+	s := &Server{
 		cfg:         cfg,
 		log:         log,
 		store:       store,
@@ -63,7 +65,13 @@ func New(cfg Config, store *Store, log *slog.Logger) *Server {
 		tunnels:     map[string]*tunnel{},
 		stopping:    make(chan struct{}),
 	}
+	s.fleet = newFleet(s)
+	return s
 }
+
+// RunFleet delivers fleet alerts and watches for agents going down, until ctx
+// is done.
+func (s *Server) RunFleet(ctx context.Context) { s.fleet.Run(ctx) }
 
 // tunnelBase is the placeholder URL for connected agents; requests to it are
 // carried by tunnelTransport, never dialed.
@@ -167,11 +175,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agents/{name}/revoke", s.handleSetRevoked(true))
 	mux.HandleFunc("POST /api/agents/{name}/allow", s.handleSetRevoked(false))
 
+	mux.HandleFunc("GET /api/alerts", s.handleHistory)
+	mux.HandleFunc("GET /api/silences", s.handleListSilences)
+	mux.HandleFunc("POST /api/silences", s.handleAddSilence)
+	mux.HandleFunc("DELETE /api/silences/{id}", s.handleExpireSilence)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("POST /api/settings/test-ops", s.handleTestOps)
+
 	// Endpoints for connected agents. They authenticate with enrollment
 	// tokens or agent credentials, not with the dashboard login.
 	mux.HandleFunc("POST /agent/v1/enroll", s.handleEnroll)
 	mux.HandleFunc("POST /agent/v1/poll", s.handlePoll)
 	mux.HandleFunc("POST /agent/v1/respond", s.handleRespond)
+	mux.HandleFunc("POST /agent/v1/alerts", s.handleAlerts)
 	return s.auth(mux)
 }
 
@@ -228,6 +245,7 @@ type agentView struct {
 	EnrolledVia        string            `json:"enrolled_via,omitempty"`
 	Revoked            bool              `json:"revoked,omitempty"`
 	LastSeen           time.Time         `json:"last_seen,omitempty"`
+	DownSince          time.Time         `json:"down_since,omitempty"` // set once an agent-down alert went out
 	Online             bool              `json:"online"`
 	Error              string            `json:"error,omitempty"`
 	Status             json.RawMessage   `json:"status,omitempty"`
@@ -249,6 +267,8 @@ type groupView struct {
 	Source         string            `json:"source"`
 	Git            *gitView          `json:"git,omitempty"`
 	Selector       map[string]string `json:"selector,omitempty"`
+	Fleet          FleetSettings     `json:"fleet"`
+	OpsWebhookURL  string            `json:"ops_webhook_url,omitempty"`
 	RulesHash      string            `json:"rules_hash,omitempty"`
 	RulesUpdatedAt time.Time         `json:"rules_updated_at"`
 	Members        []string          `json:"members"`
@@ -256,7 +276,7 @@ type groupView struct {
 }
 
 func (s *Server) groupView(g GroupRecord) groupView {
-	v := groupView{Name: g.Name, Description: g.Description, Source: g.Source, Selector: g.Selector, RulesHash: g.RulesHash,
+	v := groupView{Name: g.Name, Description: g.Description, Source: g.Source, Selector: g.Selector, Fleet: g.Fleet, OpsWebhookURL: g.OpsWebhookURL, RulesHash: g.RulesHash,
 		RulesUpdatedAt: g.RulesUpdatedAt, Members: []string{}, State: s.snapshotState(g.Name)}
 	if g.Git != nil {
 		v.Git = &gitView{Provider: g.Git.Provider, BaseURL: g.Git.BaseURL, Repo: g.Git.Repo, Ref: g.Git.Ref,
@@ -272,7 +292,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 
-	recs, groups := s.store.Agents(), s.store.Groups()
+	recs, groups, down := s.store.Agents(), s.store.Groups(), s.fleet.downStates()
 	out := struct {
 		Agents []agentView `json:"agents"`
 		Groups []groupView `json:"groups"`
@@ -285,6 +305,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			v := agentView{Name: a.Name, Mode: "direct", URL: a.URL, Group: EffectiveGroup(a, groups), Assigned: a.Group != "",
 				HasToken: a.Token != "", InsecureSkipVerify: a.InsecureSkipVerify, AddedAt: a.AddedAt}
+			v.DownSince = down[a.Name]
 			if a.Connected() {
 				v.Mode, v.URL, v.Labels, v.Hostname, v.EnrolledVia = "connected", "", a.Labels, a.Hostname, a.EnrolledVia
 				v.Revoked, v.LastSeen = a.Revoked, s.lastSeenAt(a.ID)
@@ -569,6 +590,8 @@ type groupRequest struct {
 	Source      string            `json:"source"`
 	Git         *GitSource        `json:"git"`
 	Selector    map[string]string `json:"selector"`
+	Fleet       FleetSettings     `json:"fleet"`
+	OpsWebhook  string            `json:"ops_webhook_url"`
 	// Rules optionally seeds a manual group's rule set on creation.
 	Rules string `json:"rules"`
 }
@@ -578,7 +601,7 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector}
+	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook)}
 	if req.Rules != "" && req.Source == "manual" {
 		if _, err := validateForDashboard([]byte(req.Rules)); err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
@@ -606,7 +629,7 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector}
+	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook)}
 	if err := s.store.UpdateGroup(g); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

@@ -268,7 +268,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		}
 		break
 	}
-	json.NewEncoder(w).Encode(map[string]any{"requests": orEmpty(reqs)})
+	json.NewEncoder(w).Encode(map[string]any{"requests": orEmpty(reqs), "silences": s.silencesFor(a)})
 }
 
 // wakeTunnel ends an agent's held poll early.

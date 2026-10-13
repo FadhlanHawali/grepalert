@@ -22,3 +22,13 @@ rules:
     pattern: 'FATAL'
     severity: critical
     webhooks: [sink]
+
+  # Absence rule: loggen writes "INFO request served" constantly; if it stops
+  # (docker compose stop loggen), this fires after 2 minutes, and recovers
+  # when it starts again.
+  - name: app-silent
+    files: ["/var/log/demo/app.log"]
+    absent: 'INFO request served'
+    for: 2m
+    severity: critical
+    webhooks: [sink]

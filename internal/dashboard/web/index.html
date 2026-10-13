@@ -162,6 +162,16 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: 
       <label class="field"><span>Name</span><input type="text" name="name" placeholder="web-servers" required></label>
       <label class="field"><span>Description</span><input type="text" name="description" placeholder="optional"></label>
     </div>
+    <div class="field"><span>Alerts across agents</span>
+      <label class="check"><input type="checkbox" name="fleet_on" checked> Combine the same alert from several agents into one ("on 12 hosts")</label>
+      <div class="two" id="fg-fleet">
+        <label class="field"><span class="muted" style="font-weight:normal">Gather hosts for</span><select name="fleet_wait"><option value="0s">0 s (send at once)</option><option value="5s" selected>5 s</option><option value="15s">15 s</option><option value="30s">30 s</option></select></label>
+        <label class="field"><span class="muted" style="font-weight:normal">Then hold repeats for</span><select name="fleet_window"><option value="1m">1 minute</option><option value="5m" selected>5 minutes</option><option value="15m">15 minutes</option><option value="1h">1 hour</option></select></label>
+      </div>
+      <small>Applies to agents that connect to the dashboard. When the window ends, one summary says how many more matches were held back.</small></div>
+    <label class="field"><span>Agent-down alerts go to <span class="muted">(optional)</span></span>
+      <input type="text" name="ops_webhook" placeholder="default: the ops webhook in Settings">
+      <small>A webhook URL for this group's agent-down and agent-back alerts. You can also enter <code>${ENV_VAR}</code>.</small></label>
     <label class="field"><span>Auto-add agents with labels</span>
       <input type="text" name="selector" placeholder="role=web, env=prod">
       <small>Enrolled agents that have all of these labels join this group by themselves. Leave empty to add agents by hand.</small></label>
@@ -273,6 +283,7 @@ function parseHash() {
   if (h.startsWith('group/')) return { kind: 'group', name: h.slice(6) };
   if (h === 'ungrouped') return { kind: 'ungrouped' };
   if (h === 'enroll') return { kind: 'enroll' };
+  if (h === 'alerts' || h === 'silences' || h === 'settings') return { kind: h };
   return { kind: 'all' };
 }
 function go(v) {
@@ -305,7 +316,8 @@ function agentNameCell(a) {
     ? `<span title="Connects out to the dashboard: no inbound port">⇡ ${esc(a.hostname || 'enrolled agent')}</span>`
     : esc(a.url);
   const auto = a.mode === 'connected' && a.group && !a.assigned ? ' <span class="badge" title="Joined by label">auto</span>' : '';
-  return `<span class="dot ${dot}"></span> ${esc(a.name)}${auto}<div class="muted mono">${how}</div>
+  const down = !zero(a.down_since) ? ` <span class="badge bad" title="agent-down alert sent; down since ${esc(new Date(a.down_since).toLocaleString())}">down</span>` : '';
+  return `<span class="dot ${dot}"></span> ${esc(a.name)}${auto}${down}<div class="muted mono">${how}</div>
     ${a.labels ? `<div style="margin-top:3px">${labelChips(a.labels)}</div>` : ''}`;
 }
 
@@ -340,6 +352,7 @@ function groupHealth(g) {
 // ---------- rendering ----------
 function render() {
   renderNav(); renderMain();
+  $('#main').dataset.view = view.kind;
   const online = data.agents.filter(a => a.online).length;
   $('#summary').textContent = data.agents.length ? `${online}/${data.agents.length} agents online` : '';
 }
@@ -354,13 +367,20 @@ function renderNav() {
     ${data.groups.map(g => `<a class="${on('group', g.name)}" data-nav="group" data-name="${esc(g.name)}">
       <span class="dot ${groupHealth(g)}"></span>${esc(g.name)}<span class="count">${g.members.length}</span></a>`).join('')}
     <a class="new" data-action="new-group">+ New group</a>
+    <div class="label">Alerts</div>
+    <a class="${on('alerts')}" data-nav="alerts">Alert history</a>
+    <a class="${on('silences')}" data-nav="silences">Silences ${activeSilences().length ? `<span class="count">${activeSilences().length} active</span>` : ''}</a>
     <div class="label">Setup</div>
-    <a class="${on('enroll')}" data-nav="enroll">Agent enrollment</a>`;
+    <a class="${on('enroll')}" data-nav="enroll">Agent enrollment</a>
+    <a class="${on('settings')}" data-nav="settings">Settings</a>`;
 }
 
 function renderMain() {
   const main = $('#main');
   if (view.kind === 'enroll') { renderEnroll(); return; }
+  if (view.kind === 'alerts') { renderAlerts(); return; }
+  if (view.kind === 'silences') { renderSilences(); return; }
+  if (view.kind === 'settings') { renderSettings(); return; }
   if (!data.agents.length && !data.groups.length) {
     main.innerHTML = `<div class="card"><div class="empty"><h3>No agents connected yet</h3>
       <p>Let agents connect to the dashboard themselves with an <b>enrollment token</b> (no inbound port needed),<br>
@@ -406,7 +426,7 @@ function agentTable(list, showGroup, groupCtx) {
       return `<tr class="click ${sel}" data-agent="${esc(a.name)}">
         <td>${agentNameCell(a)}</td>${group}
         <td>${rules}</td><td>${esc(s.host)}</td><td>${esc(s.version)}</td><td>${uptime(s.started_at)}</td>
-        <td class="num">${(s.files || []).length}</td><td class="num">${s.webhooks.sent}</td>
+        <td class="num">${(s.files || []).length}</td><td class="num" title="sent by the agent: ${s.webhooks.sent}, handed to the dashboard: ${s.webhooks.via_dashboard || 0}">${s.webhooks.sent + (s.webhooks.via_dashboard || 0)}</td>
         <td class="num">${bad ? `<span class="badge bad">${s.webhooks.failed} / ${s.webhooks.dropped}</span>` : '0 / 0'}</td>
         <td class="num">${mb(s.memory.sys)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
@@ -427,15 +447,18 @@ function groupCard(g) {
       <div class="actions">
         <button data-action="sync-group" ${st.syncing ? 'disabled' : ''}>${st.syncing ? 'Syncing…' : g.source === 'git' ? 'Sync from git' : 'Push to agents'}</button>
         <button data-action="edit-group">Edit</button>
+        <button data-action="silence-group">Silence…</button>
         <button class="danger" data-action="delete-group">Delete</button></div></div>
     <div class="meta">
       <span>Rules: <b>${esc(sourceText(g))}</b></span>
+      <span>Fleet: <b>${g.fleet && g.fleet.disabled ? 'off (every agent alerts separately)' : `one alert across hosts, gathered ${esc((g.fleet && g.fleet.wait) || '5s')}, repeats held ${esc((g.fleet && g.fleet.window) || '5m')}`}</b></span>
       <span>Members: <b>${g.selector ? 'agents labelled ' + esc(labelsText(g.selector)) + ', plus any added by hand' : 'added by hand'}</b></span>
       ${g.source === 'git' ? `<span>Sync: <b>${g.git.interval ? 'every ' + esc(g.git.interval) : 'manual'}</b></span>` : ''}
       <span>Version: <b class="mono">${g.rules_hash ? esc(g.rules_hash) : 'none yet'}</b>${g.rules_hash ? ' · updated ' + ago(g.rules_updated_at) : ''}</span>
       <span>Agents in sync: <b>${inSync}/${members.length}</b></span>
       ${!zero(st.last_sync) ? `<span>Last sync: <b>${ago(st.last_sync)}</b> (${esc(st.trigger)})</span>` : ''}
     </div>
+    ${silenceBanner(g.name)}
     ${st.last_error ? `<div class="pane" style="padding-top:0"><div class="msg bad">${esc(st.last_error)}</div></div>` : ''}
     ${!g.rules_hash && g.source === 'manual' ? `<div class="pane" style="padding-top:0"><div class="msg info">This group has no rules yet. Open the <b>Rules</b> tab to write them.</div></div>` : ''}
     <div class="tabs" data-tabs="group">
@@ -504,12 +527,12 @@ function tabOverview(a) {
   el.innerHTML = `<div class="grid">
       ${stat('Heap in use', mb(s.memory.heap_inuse))}${stat('Memory from OS', mb(s.memory.sys))}
       ${stat('Memory limit', s.memory.memory_limit > 0 && s.memory.memory_limit < 9e18 ? mb(s.memory.memory_limit) : 'none')}
-      ${stat('Alerts sent', s.webhooks.sent)}${stat('Webhook queue', s.webhooks.queued)}${stat('Suppression keys', s.suppress_keys)}
+      ${s.dashboard ? stat('Alerts via dashboard', s.webhooks.via_dashboard) + stat('Sent directly (fallback)', s.webhooks.fallback) : ''}${stat('Alerts sent', s.webhooks.sent)}${stat('Webhook queue', s.webhooks.queued)}${stat('Suppression keys', s.suppress_keys)}
     </div>
     <div class="muted">Rules <code>${esc(s.rules_hash)}</code> loaded ${ago(s.rules_loaded_at)} from <b>${esc(s.rules_origin || '—')}</b></div>
     <h3 class="sec">Rules</h3>
     <div class="scroll"><table><thead><tr><th>Rule</th><th>Pattern</th><th>Suppression</th><th class="num">Matches</th><th class="num">Alerts</th><th class="num">Suppressed</th><th>Last match</th></tr></thead><tbody>
-    ${(s.rules || []).map(r => `<tr><td>${esc(r.name)}</td><td class="wrap"><code>${esc(r.pattern)}</code></td><td>${esc(r.suppress || 'off')}</td>
+    ${(s.rules || []).map(r => `<tr><td>${esc(r.name)}</td><td class="wrap">${r.absent ? `<span class="badge ${r.firing ? 'bad' : 'ok'}">${r.firing ? 'missing' : 'seen'}</span> absent <code>${esc(r.absent)}</code> for ${esc(r.for)}` : `<code>${esc(r.pattern)}</code>`}</td><td>${esc(r.suppress || (r.absent ? 'once, then on recovery' : 'off'))}</td>
       <td class="num">${r.matches}</td><td class="num">${r.alerts}</td><td class="num">${r.suppressed}</td><td>${ago(r.last_match)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No active rules</td></tr>'}
     </tbody></table></div>
     <h3 class="sec">Tailed files</h3>
@@ -654,11 +677,97 @@ async function loadTokens() {
   } catch (e) { $('#tok-list').innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
 }
 
+// ---------- silences, alert history, settings ----------
+let silences = [];
+const activeSilences = () => silences.filter(s => new Date(s.ends_at) > Date.now() && new Date(s.starts_at) <= Date.now());
+const until = t => { const m = Math.round((new Date(t) - Date.now()) / 60000); return m < 60 ? `${Math.max(m, 0)} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+const scopeText = s => [s.group ? `group ${s.group}` : 'all groups', s.rules?.length ? `rules ${s.rules.join(', ')}` : 'all rules',
+  s.agents?.length ? `agents ${s.agents.join(', ')}` : ''].filter(Boolean).join(' · ');
+
+function silenceBanner(group) {
+  const act = activeSilences().filter(s => !s.group || s.group === group);
+  if (!act.length) return '';
+  return `<div class="pane" style="padding-top:0">${act.map(s => `<div class="msg info" style="margin:0 0 6px">🔕 <b>Silenced</b> (${esc(scopeText(s))}) for another ${until(s.ends_at)}${s.reason ? ' — ' + esc(s.reason) : ''}
+    <button class="link" data-action="end-silence" data-id="${esc(s.id)}">End now</button></div>`).join('')}</div>`;
+}
+
+function renderSilences() {
+  const now = Date.now();
+  const act = silences.filter(s => new Date(s.ends_at) > now), past = silences.filter(s => new Date(s.ends_at) <= now).slice(0, 20);
+  const row = (s, active) => `<tr><td>${esc(scopeText(s))}</td><td class="wrap">${esc(s.reason || '—')}</td>
+    <td>${new Date(s.starts_at).toLocaleString()}</td><td>${active ? 'in ' + until(s.ends_at) : new Date(s.ends_at).toLocaleString()}</td>
+    <td>${active ? `<button data-action="end-silence" data-id="${esc(s.id)}">End now</button>` : ''}</td></tr>`;
+  $('#main').innerHTML = `<div class="card"><div class="card-head"><div><h2>Silences</h2>
+      <div class="sub">Mute alerts during maintenance. Silenced alerts are not sent but still appear in the alert history.
+      Agents also receive silences, so they hold even when an agent has to send alerts itself.</div></div></div>
+    <div class="pane" style="padding-top:0"><div class="stack" style="max-width:720px">
+      <div class="two">
+        <label class="field"><span>Group</span><select id="sl-group"><option value="">All groups</option>${data.groups.map(g => `<option>${esc(g.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>For</span><select id="sl-dur"><option value="30m">30 minutes</option><option value="1h">1 hour</option><option value="2h" selected>2 hours</option><option value="4h">4 hours</option><option value="8h">8 hours</option><option value="24h">1 day</option><option value="72h">3 days</option></select></label>
+      </div>
+      <div class="two">
+        <label class="field"><span>Only rules <span class="muted">(optional)</span></span><input type="text" id="sl-rules" placeholder="errors, panics, agent-down"><small>Comma-separated. Empty = all rules. <code>agent-down</code> silences agent-down alerts.</small></label>
+        <label class="field"><span>Only agents <span class="muted">(optional)</span></span><input type="text" id="sl-agents" placeholder="db-01, db-02"><small>Comma-separated. Empty = all agents.</small></label>
+      </div>
+      <label class="field"><span>Reason</span><input type="text" id="sl-reason" placeholder="kernel patching, ticket OPS-123"></label>
+      <div><button class="primary" data-action="create-silence">Create silence</button></div>
+    </div>
+    <h3 class="sec">Active</h3>
+    ${act.length ? `<div class="scroll"><table><thead><tr><th>Scope</th><th>Reason</th><th>Started</th><th>Ends</th><th></th></tr></thead><tbody>${act.map(s => row(s, true)).join('')}</tbody></table></div>` : '<div class="muted">None.</div>'}
+    <h3 class="sec">Recently ended</h3>
+    ${past.length ? `<div class="scroll"><table><thead><tr><th>Scope</th><th>Reason</th><th>Started</th><th>Ended</th><th></th></tr></thead><tbody>${past.map(s => row(s, false)).join('')}</tbody></table></div>` : '<div class="muted">None.</div>'}
+    </div></div>`;
+}
+
+let alertsGroup = '';
+async function renderAlerts() {
+  if (!$('#al-list')) $('#main').innerHTML = `<div class="card"><div class="card-head"><div><h2>Alert history</h2>
+      <div class="sub">Alerts the dashboard handled for agents that connect to it: sent (combined across hosts), silenced, failed, and agent-down/up.
+      Alerts an agent sent itself (direct agents, or while the dashboard was unreachable) are in that agent's Events tab.</div></div>
+      <div class="actions"><select id="al-group"><option value="">All groups</option>${data.groups.map(g => `<option ${g.name === alertsGroup ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div></div>
+    <div id="al-list" class="pane muted">Loading…</div></div>`;
+  try {
+    const { data: list } = await api('GET', `/api/alerts?limit=300&group=${enc(alertsGroup)}`);
+    const cls = { sent: 'ok', silenced: '', failed: 'bad', dropped: 'bad', 'no destination': 'warn' };
+    const kinds = { match: 'match', summary: 'agent summary', fleet_summary: 'held back', absent: 'missing line', recovered: 'recovered', agent_down: 'agent down', agent_up: 'agent back' };
+    $('#al-list').classList.remove('muted');
+    $('#al-list').innerHTML = list.length ? `<div class="scroll"><table><thead><tr><th>Time</th><th>Status</th><th>Kind</th><th>Group</th><th>Rule</th><th class="num">Hosts</th><th>Message</th></tr></thead><tbody>
+      ${list.map(e => `<tr><td title="${esc(e.time)}">${new Date(e.time).toLocaleTimeString()}</td>
+        <td><span class="badge ${cls[e.status] ?? ''}" title="${esc(e.detail || '')}">${esc(e.status)}</span></td>
+        <td>${esc(kinds[e.kind] || e.kind)}</td><td>${esc(e.group || '—')}</td><td>${esc(e.rule)}${e.group_key ? ` <span class="muted">(${esc(e.group_key)})</span>` : ''}</td>
+        <td class="num" title="${esc((e.hosts || []).join(', '))}">${e.host_count}</td><td class="wrap mono">${esc(e.text)}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">No alerts yet.</div>';
+  } catch (err) { $('#al-list').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; }
+}
+
+async function renderSettings() {
+  $('#main').innerHTML = `<div class="card"><div class="card-head"><div><h2>Settings</h2></div></div><div class="pane" style="padding-top:0" id="st-body">Loading…</div></div>`;
+  let st;
+  try { st = (await api('GET', '/api/settings')).data; }
+  catch (err) { $('#st-body').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; return; }
+  $('#st-body').innerHTML = `<div class="stack" style="max-width:720px">
+    <h3 class="sec" style="margin-top:0">Agent-down alerts</h3>
+    <p class="muted" style="margin:0">When an agent stops reporting, the dashboard alerts here (a group can use its own URL instead). It alerts again when the agent is back.</p>
+    <label class="field"><span>Ops webhook URL</span><input type="text" id="st-url" value="${esc(st.ops_webhook?.url || '')}" placeholder="https://hooks.slack.com/services/…  or  \${OPS_WEBHOOK_URL}"></label>
+    <label class="field"><span>Body template <span class="muted">(optional)</span></span>
+      <input type="text" id="st-tmpl" value="${esc(st.ops_webhook?.template || '')}" placeholder='{"text": {{ json .Text }}}'>
+      <small>Go template with the alert fields; empty sends the alert as JSON.</small></label>
+    <label class="field" style="max-width:260px"><span>Alert when unreachable for</span>
+      <select id="st-after">${['30s', '1m', '2m', '5m', '10m', '30m'].map(v => `<option ${v === (st.agent_down_after || '2m') ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <div class="row" style="margin:0"><button class="primary" data-action="save-settings">Save</button><button data-action="test-ops">Send a test alert</button></div>
+    <div id="st-msg"></div></div>`;
+}
+
 // ---------- refresh ----------
 async function refresh() {
-  try { data = (await api('GET', '/api/overview')).data; }
+  try {
+    const [ov, sil] = await Promise.all([api('GET', '/api/overview'), api('GET', '/api/silences').catch(() => ({ data: [] }))]);
+    data = ov.data; silences = sil.data || [];
+  }
   catch (e) { $('#summary').textContent = 'dashboard error: ' + e.message; return; }
-  if (document.querySelector('dialog[open]') || view.kind === 'enroll') { renderNav(); return; }
+  // Form pages keep their inputs: once shown, refreshes only update the nav.
+  const formPage = ['enroll', 'silences', 'settings'].includes(view.kind) && $('#main').dataset.view === view.kind;
+  if (document.querySelector('dialog[open]') || formPage) { renderNav(); return; }
   // Keep focus/scroll and unsaved edits stable: re-render only if not editing.
   const editing = editorDirty || document.activeElement?.matches('textarea, input');
   if (editing) { renderNav(); return; }
@@ -746,6 +855,10 @@ function openGroupDialog(group) {
     online.map(a => `<option value="agent:${esc(a.name)}">A copy of ${esc(a.name)}'s current rules</option>`).join('');
   if (group) {
     f.name.value = group.name; f.description.value = group.description || ''; f.selector.value = labelsText(group.selector);
+    f.fleet_on.checked = !(group.fleet && group.fleet.disabled);
+    if (group.fleet && group.fleet.wait) f.fleet_wait.value = group.fleet.wait;
+    if (group.fleet && group.fleet.window) f.fleet_window.value = group.fleet.window;
+    f.ops_webhook.value = group.ops_webhook_url || '';
     f.source.value = group.source;
     if (group.git) {
       f.provider.value = group.git.provider; f.repo.value = group.git.repo || ''; f.ref.value = group.git.ref || '';
@@ -769,6 +882,8 @@ function groupFormVisibility() {
 async function saveGroup() {
   const f = $('#f-group'), msg = $('#fg-msg');
   const body = { name: f.name.value.trim(), description: f.description.value.trim(), source: f.source.value };
+  body.fleet = { disabled: !f.fleet_on.checked, wait: f.fleet_wait.value, window: f.fleet_window.value };
+  body.ops_webhook_url = f.ops_webhook.value.trim();
   try { body.selector = parseLabels(f.selector.value); }
   catch (e) { msg.innerHTML = `<div class="msg bad">Labels: ${esc(e.message)}</div>`; f.selector.focus(); return; }
   if (!body.name) { f.name.focus(); return; }
@@ -848,6 +963,28 @@ document.addEventListener('click', async e => {
     case 'close-agent': selAgent = null; return render();
     case 'edit-agent': return openAgentDialog(a);
     case 'goto-enroll': $('#dlg-agent').close(); return go({ kind: 'enroll' });
+    case 'silence-group': go({ kind: 'silences' }); $('#sl-group').value = g.name; $('#sl-reason').focus(); return;
+    case 'create-silence': {
+      const split = s => s.split(',').map(x => x.trim()).filter(Boolean);
+      const body = { group: $('#sl-group').value, duration: $('#sl-dur').value, rules: split($('#sl-rules').value),
+        agents: split($('#sl-agents').value), reason: $('#sl-reason').value.trim() };
+      try { await api('POST', '/api/silences', body); toast('Silence created'); silences = (await api('GET', '/api/silences')).data; renderSilences(); renderNav(); }
+      catch (err) { toast(err.message, true); }
+      return;
+    }
+    case 'end-silence':
+      try { await api('DELETE', `/api/silences/${enc(t.dataset.id)}`); toast('Silence ended'); await refresh(); render(); }
+      catch (err) { toast(err.message, true); } return;
+    case 'save-settings':
+      try {
+        await api('PUT', '/api/settings', { ops_webhook: { url: $('#st-url').value.trim(), template: $('#st-tmpl').value.trim() }, agent_down_after: $('#st-after').value });
+        $('#st-msg').innerHTML = '<div class="msg ok">Saved.</div>';
+      } catch (err) { $('#st-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; }
+      return;
+    case 'test-ops':
+      try { const { data: r } = await api('POST', '/api/settings/test-ops'); $('#st-msg').innerHTML = `<div class="msg ok">Test alert sent to ${esc(r.sent)}.</div>`; }
+      catch (err) { $('#st-msg').innerHTML = `<div class="msg bad">Test failed: ${esc(err.message)} (save the settings first)</div>`; }
+      return;
     case 'create-token': {
       const name = $('#tok-name').value.trim();
       if (!name) { $('#tok-name').focus(); return; }
@@ -936,6 +1073,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Enter' && e.target.id === 't-line') $('[data-action=run-test]').click();
 });
+document.addEventListener('change', e => { if (e.target.id === 'al-group') { alertsGroup = e.target.value; renderAlerts(); } });
 $('#f-group').addEventListener('change', e => { if (e.target.name === 'source' || e.target.name === 'provider') groupFormVisibility(); });
 window.addEventListener('hashchange', () => { view = parseHash(); render(); });
 

@@ -1,33 +1,18 @@
 package agent
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/fadhlanhawali/grepalert/internal/alert"
 	"github.com/fadhlanhawali/grepalert/internal/rules"
 )
 
-// Alert is what gets delivered to a webhook.
-type Alert struct {
-	Kind        string            `json:"kind"` // "match" or "summary"
-	Agent       string            `json:"agent"`
-	Host        string            `json:"host"`
-	Rule        string            `json:"rule"`
-	Description string            `json:"description,omitempty"`
-	Severity    string            `json:"severity,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	File        string            `json:"file"`
-	Line        string            `json:"line"`
-	Groups      map[string]string `json:"groups,omitempty"`
-	GroupKey    string            `json:"group_key,omitempty"`
-	Time        time.Time         `json:"time"`
-	// Suppressed is how many matches were swallowed by suppression. On a
-	// "summary" alert it is the total for the window that just closed.
-	Suppressed int `json:"suppressed"`
-	// Text is a ready-made human readable message.
-	Text string `json:"text"`
-}
+// Alert is what gets delivered to a webhook (shared with the dashboard).
+type Alert = alert.Alert
 
 // maxSuppressKeys bounds the suppression table. With group_by on a
 // high-cardinality capture (e.g. request IDs) the table could otherwise grow
@@ -46,6 +31,13 @@ type suppressState struct {
 	lastLine   string
 	lastFile   string
 	rule       *rules.CompiledRule
+}
+
+// absentState tracks one absence rule.
+type absentState struct {
+	lastSeen time.Time
+	firing   bool
+	rule     *rules.CompiledRule
 }
 
 // RuleStats are per-rule counters exposed to the dashboard.
@@ -67,6 +59,7 @@ type engine struct {
 	mu       sync.Mutex
 	suppress map[suppressKey]*suppressState
 	stats    map[string]*RuleStats
+	absent   map[string]*absentState
 
 	now func() time.Time
 }
@@ -86,6 +79,7 @@ func newEngine(agentName, host string, events *ring, notify func(Alert, *rules.C
 		events:    events,
 		suppress:  map[suppressKey]*suppressState{},
 		stats:     map[string]*RuleStats{},
+		absent:    map[string]*absentState{},
 		now:       time.Now,
 	}
 	e.snap.Store(&snapshot{rules: &rules.Compiled{}, byFile: map[string][]*rules.CompiledRule{}})
@@ -117,6 +111,21 @@ func (e *engine) setSnapshot(s *snapshot) {
 			delete(e.stats, name)
 		}
 	}
+	// Absence rules: a new rule gets its full "for" duration before it can
+	// fire; an existing one keeps its timer across reloads.
+	now := e.now()
+	for name, st := range e.absent {
+		if r, ok := live[name]; ok && r.Absence {
+			st.rule = r
+		} else {
+			delete(e.absent, name)
+		}
+	}
+	for _, r := range s.rules.Rules {
+		if r.Absence && e.absent[r.Name] == nil {
+			e.absent[r.Name] = &absentState{lastSeen: now, rule: r}
+		}
+	}
 }
 
 // process is called by tailers for every line. It allocates only on a match.
@@ -124,6 +133,12 @@ func (e *engine) process(path string, line []byte) {
 	s := e.snap.Load()
 	for _, r := range s.byFile[path] {
 		if r.Pre != nil && !r.Pre.MayMatch(line) {
+			continue
+		}
+		if r.Absence {
+			if r.Re.Match(line) && (r.ExcludeRe == nil || !r.ExcludeRe.Match(line)) {
+				e.absentSeen(r, path, line)
+			}
 			continue
 		}
 		m := r.Re.FindSubmatchIndex(line)
@@ -181,7 +196,7 @@ func (e *engine) match(r *rules.CompiledRule, path string, line []byte, m []int)
 	st.Alerts++
 	e.mu.Unlock()
 
-	a := e.newAlert("match", r, path, string(line), now)
+	a := e.newAlert(alert.KindMatch, r, path, string(line), now)
 	a.GroupKey = group
 	a.Suppressed = carried
 	if len(r.Re.SubexpNames()) > 1 {
@@ -209,18 +224,70 @@ func (e *engine) sweep() {
 		}
 		delete(e.suppress, k)
 		if ss.suppressed > 0 && ss.rule.SendSummary() {
-			a := e.newAlert("summary", ss.rule, ss.lastFile, ss.lastLine, now)
+			a := e.newAlert(alert.KindSummary, ss.rule, ss.lastFile, ss.lastLine, now)
 			a.GroupKey = k.group
 			a.Suppressed = ss.suppressed
 			summaries = append(summaries, a)
 			rs = append(rs, ss.rule)
 		}
 	}
+	// Absence rules whose line has not been seen for their duration fire once.
+	for _, st := range e.absent {
+		if st.firing || now.Sub(st.lastSeen) < st.rule.For.D() {
+			continue
+		}
+		st.firing = true
+		r := st.rule
+		a := e.newAlert(alert.KindAbsent, r, strings.Join(r.Files, ", "),
+			fmt.Sprintf("%s for %s (expected %q)", strings.Join(r.Files, ", "), r.For.D(), r.Absent), now)
+		summaries = append(summaries, a)
+		rs = append(rs, r)
+		e.statsFor(r.Name).Alerts++
+	}
 	e.mu.Unlock()
 
 	for i := range summaries {
 		e.dispatch(summaries[i], rs[i])
 	}
+}
+
+// absentSeen records a line matching an absence rule, and sends a recovery
+// alert if the rule was firing.
+func (e *engine) absentSeen(r *rules.CompiledRule, path string, line []byte) {
+	now := e.now()
+	e.mu.Lock()
+	st := e.statsFor(r.Name)
+	st.Matches++
+	st.LastMatch = now
+	as := e.absent[r.Name]
+	recovered := as != nil && as.firing
+	if as != nil {
+		as.lastSeen, as.firing = now, false
+	}
+	e.mu.Unlock()
+	if recovered {
+		e.dispatch(e.newAlert(alert.KindRecovered, r, path, string(line), now), r)
+	}
+}
+
+// statsFor returns the stats entry of a rule; callers hold e.mu.
+func (e *engine) statsFor(name string) *RuleStats {
+	st := e.stats[name]
+	if st == nil {
+		st = &RuleStats{}
+		e.stats[name] = st
+	}
+	return st
+}
+
+// absenceInfo reports an absence rule's state for the status page.
+func (e *engine) absenceInfo(name string) (lastSeen time.Time, firing bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if st := e.absent[name]; st != nil {
+		return st.lastSeen, st.firing
+	}
+	return time.Time{}, false
 }
 
 func (e *engine) newAlert(kind string, r *rules.CompiledRule, path, line string, now time.Time) Alert {
@@ -239,7 +306,7 @@ func (e *engine) newAlert(kind string, r *rules.CompiledRule, path, line string,
 }
 
 func (e *engine) dispatch(a Alert, r *rules.CompiledRule) {
-	a.Text = alertText(a)
+	a.Text = alert.FormatText(a)
 	e.events.add(Event{Time: a.Time, Type: "alert", Rule: a.Rule, File: a.File, Message: a.Text})
 	e.notify(a, r)
 }

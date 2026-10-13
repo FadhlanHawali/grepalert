@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,51 @@ func BenchmarkProcessNoMatch(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		e.process("/f", line)
+	}
+}
+
+const absenceRules = `
+webhooks:
+  - name: hook
+    url: http://127.0.0.1:1/
+rules:
+  - name: heartbeat
+    files: [/var/log/app.log]
+    absent: 'heartbeat OK'
+    for: 10m
+    webhooks: [hook]
+`
+
+func TestAbsenceRule(t *testing.T) {
+	e, got, clk := newTestEngine(t, absenceRules)
+	const f = "/var/log/app.log"
+
+	// Seen regularly: never fires.
+	for i := 0; i < 3; i++ {
+		clk.t = clk.t.Add(5 * time.Minute)
+		e.process(f, []byte("12:00 heartbeat OK"))
+		e.sweep()
+	}
+	if len(*got) != 0 {
+		t.Fatalf("fired while the line was seen: %+v", *got)
+	}
+
+	// Missing for 10 minutes: fires once.
+	clk.t = clk.t.Add(10 * time.Minute)
+	e.sweep()
+	e.sweep()
+	if len(*got) != 1 || (*got)[0].Kind != "absent" {
+		t.Fatalf("alerts = %+v, want one absent alert", *got)
+	}
+	if !strings.Contains((*got)[0].Text, "no matching line") {
+		t.Fatalf("text = %q", (*got)[0].Text)
+	}
+
+	// Seen again: one recovery alert; unrelated lines do nothing.
+	e.process(f, []byte("something else"))
+	e.process(f, []byte("12:30 heartbeat OK"))
+	e.process(f, []byte("12:31 heartbeat OK"))
+	if len(*got) != 2 || (*got)[1].Kind != "recovered" {
+		t.Fatalf("alerts = %+v, want a recovery alert", *got)
 	}
 }

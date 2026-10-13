@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +68,11 @@ type GroupRecord struct {
 	// Selector auto-adds connected agents whose labels contain all of these
 	// key/value pairs (unless an admin assigned the agent elsewhere).
 	Selector map[string]string `json:"selector,omitempty"`
+	// Fleet controls deduplication of alerts across the group's agents.
+	Fleet FleetSettings `json:"fleet"`
+	// OpsWebhookURL receives agent-down/up alerts for this group; empty
+	// uses the dashboard-wide ops webhook (Settings).
+	OpsWebhookURL string `json:"ops_webhook_url,omitempty"`
 	// Rules is the group's rule set: edited in the dashboard (manual) or the
 	// last version fetched from git.
 	Rules          string    `json:"rules,omitempty"`
@@ -76,10 +82,12 @@ type GroupRecord struct {
 }
 
 type storeData struct {
-	Version int               `json:"version"`
-	Agents  []AgentRecord     `json:"agents"`
-	Groups  []GroupRecord     `json:"groups"`
-	Tokens  []EnrollmentToken `json:"enrollment_tokens,omitempty"`
+	Version  int               `json:"version"`
+	Agents   []AgentRecord     `json:"agents"`
+	Groups   []GroupRecord     `json:"groups"`
+	Tokens   []EnrollmentToken `json:"enrollment_tokens,omitempty"`
+	Silences []Silence         `json:"silences,omitempty"`
+	Settings Settings          `json:"settings"`
 }
 
 // Store persists agents and groups to a JSON file. It holds tokens, so the
@@ -299,6 +307,12 @@ func CheckLabels(labels map[string]string) error {
 func validateGroup(g *GroupRecord) error {
 	if err := checkName("group", g.Name); err != nil {
 		return err
+	}
+	if err := g.Fleet.validate(); err != nil {
+		return err
+	}
+	if g.OpsWebhookURL != "" && !strings.HasPrefix(g.OpsWebhookURL, "http://") && !strings.HasPrefix(g.OpsWebhookURL, "https://") && !strings.HasPrefix(g.OpsWebhookURL, "${") {
+		return errors.New("the agent-down webhook must be an http(s) URL")
 	}
 	if err := CheckLabels(g.Selector); err != nil {
 		return fmt.Errorf("selector: %w", err)

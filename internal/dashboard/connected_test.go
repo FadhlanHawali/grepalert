@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fadhlanhawali/grepalert/internal/agent"
+	"github.com/fadhlanhawali/grepalert/internal/rules"
 )
 
 // waitFor polls cond until it is true or the timeout expires.
@@ -43,7 +44,7 @@ func startConnectedAgent(t *testing.T, dashURL, token, dir string, labels map[st
 		RulesFile: filepath.Join(dir, "rules.yaml"),
 		StateFile: "off",
 		Labels:    labels,
-		Dashboard: agent.DashboardConfig{URL: dashURL, EnrollmentToken: token},
+		Dashboard: agent.DashboardConfig{URL: dashURL, EnrollmentToken: token, FallbackAfter: rules.Duration(time.Second)},
 	}
 	a := agent.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())

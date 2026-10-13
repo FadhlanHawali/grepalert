@@ -72,6 +72,12 @@ func New(cfg Config, log *slog.Logger) *Agent {
 	a.sched = newScheduler(cfg.ReadWorkers, cfg.PollInterval.D(), cfg.IdlePollInterval.D())
 	if cfg.Dashboard.URL != "" {
 		a.conn, a.connErr = newConnector(a)
+		if a.conn != nil {
+			// Alerts go through the dashboard, directly only as a fallback.
+			a.notif.route = a.conn.offer
+			a.notif.silenced = a.conn.silenced
+			a.conn.fallback = a.notif.fallbackDeliver
+		}
 	}
 	return a
 }
@@ -131,6 +137,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			a.mu.Unlock()
 			a.sched.stop() // final read of every file, then close
+			if a.conn != nil {
+				a.conn.flushAlerts() // hand the last alerts to the dashboard (or send them)
+			}
 			stopNotif()
 			a.notif.wait()
 			// Save after the tailers stopped, so the final positions are exact.
@@ -302,6 +311,11 @@ type Status struct {
 		Failed  uint64 `json:"failed"`
 		Dropped uint64 `json:"dropped"`
 		Queued  int    `json:"queued"`
+		// Connected agents: alerts handed to the dashboard, sent directly
+		// because it was unreachable, and dropped because it had silenced them.
+		ViaDashboard uint64 `json:"via_dashboard"`
+		Fallback     uint64 `json:"fallback"`
+		Silenced     uint64 `json:"silenced"`
 	} `json:"webhooks"`
 	SuppressKeys int              `json:"suppress_keys"`
 	Dashboard    *DashboardStatus `json:"dashboard,omitempty"`
@@ -313,6 +327,12 @@ type RuleStatus struct {
 	Pattern  string   `json:"pattern"`
 	Files    []string `json:"files"`
 	Suppress string   `json:"suppress,omitempty"`
+	// Absence rules: the expected line, how long it may be missing, whether
+	// the rule is firing and when the line was last seen.
+	Absent       string    `json:"absent,omitempty"`
+	For          string    `json:"for,omitempty"`
+	Firing       bool      `json:"firing,omitempty"`
+	LastSeenLine time.Time `json:"last_seen_line,omitempty"`
 	RuleStats
 }
 
@@ -350,6 +370,10 @@ func (a *Agent) Status() Status {
 	s.RulesHash, s.RulesLoadedAt, s.RulesOrigin = a.rules.Hash, a.rulesLoadedAt, a.rulesOrigin
 	for _, r := range a.rules.Rules {
 		rs := RuleStatus{Name: r.Name, Pattern: r.Pattern, Files: r.Files, RuleStats: stats[r.Name]}
+		if r.Absence {
+			rs.Absent, rs.For = r.Absent, r.For.D().String()
+			rs.LastSeenLine, rs.Firing = a.eng.absenceInfo(r.Name)
+		}
 		if w := r.SuppressWindow(); w > 0 {
 			rs.Suppress = fmt.Sprintf("%d per %s", r.MaxAlerts(), w)
 			if r.Suppress.GroupBy != "" {
@@ -371,10 +395,13 @@ func (a *Agent) Status() Status {
 	a.mu.Unlock()
 	sort.Slice(s.Files, func(i, j int) bool { return s.Files[i].Path < s.Files[j].Path })
 
-	s.Webhooks.Sent = a.notif.sent.Load()
-	s.Webhooks.Failed = a.notif.failed.Load()
-	s.Webhooks.Dropped = a.notif.dropped.Load()
-	s.Webhooks.Queued = len(a.notif.queue)
+	s.Webhooks.Sent = a.notif.sender.Sent.Load()
+	s.Webhooks.Failed = a.notif.sender.Failed.Load()
+	s.Webhooks.Dropped = a.notif.sender.Dropped.Load()
+	s.Webhooks.ViaDashboard = a.notif.routed.Load()
+	s.Webhooks.Fallback = a.notif.fallback.Load()
+	s.Webhooks.Silenced = a.notif.silencedCount.Load()
+	s.Webhooks.Queued = a.notif.sender.Queued()
 	s.SuppressKeys = a.eng.suppressKeys()
 	if a.conn != nil {
 		ds := a.conn.status()

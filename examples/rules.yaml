@@ -48,3 +48,13 @@ rules:
     severity: critical
     webhooks: [ops-webhook]
     # no suppress block: every match alerts
+
+  # Absence rule: alerts when an expected line has NOT appeared for a while
+  # (a hung app or a stopped cron job writes nothing, so error rules miss it).
+  # It alerts once, then once more when the line is seen again ("recovered").
+  - name: no-heartbeat
+    files: ["/var/log/myapp/app.log"]
+    absent: 'heartbeat OK'
+    for: 10m
+    severity: critical
+    webhooks: [ops-webhook]

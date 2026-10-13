@@ -96,3 +96,25 @@ func TestEmptyDocumentIsValid(t *testing.T) {
 		t.Fatalf("Parse(nil) = %v, %v", c, err)
 	}
 }
+
+func TestAbsenceRuleValidation(t *testing.T) {
+	base := "webhooks: [{name: w, url: 'http://x.example'}]\nrules:\n  - name: r\n    files: [f]\n    webhooks: [w]\n"
+	for _, c := range []struct{ extra, wantErr string }{
+		{"    absent: 'beat'\n    for: 5m\n", ""},
+		{"    absent: 'beat'\n", "needs a positive for"},
+		{"    absent: 'beat'\n    pattern: x\n    for: 5m\n", "either pattern or absent"},
+		{"    absent: 'beat'\n    for: 5m\n    suppress: {window: 1m}\n", "suppress does not apply"},
+		{"", "pattern (or absent) is required"},
+	} {
+		c2, err := Parse([]byte(base + c.extra))
+		if c.wantErr == "" {
+			if err != nil || !c2.Rules[0].Absence || c2.Rules[0].Re.String() != "beat" {
+				t.Errorf("%q: %v", c.extra, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("%q: error %v, want %q", c.extra, err, c.wantErr)
+		}
+	}
+}

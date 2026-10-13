@@ -41,16 +41,21 @@ type Webhook struct {
 
 // Rule matches lines in one or more files.
 type Rule struct {
-	Name        string            `yaml:"name" json:"name"`
-	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Disabled    bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
-	Files       []string          `yaml:"files" json:"files"`
-	Pattern     string            `yaml:"pattern" json:"pattern"`
-	Exclude     string            `yaml:"exclude,omitempty" json:"exclude,omitempty"`
-	Severity    string            `yaml:"severity,omitempty" json:"severity,omitempty"`
-	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Webhooks    []string          `yaml:"webhooks" json:"webhooks"`
-	Suppress    *Suppress         `yaml:"suppress,omitempty" json:"suppress,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Disabled    bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Files       []string `yaml:"files" json:"files"`
+	Pattern     string   `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+	// Absent makes this an absence rule: it alerts when no line matching
+	// Absent has been seen for For, and again when one shows up (recovered).
+	// Use it for heartbeats and jobs that should log regularly.
+	Absent   string            `yaml:"absent,omitempty" json:"absent,omitempty"`
+	For      Duration          `yaml:"for,omitempty" json:"for,omitempty"`
+	Exclude  string            `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+	Severity string            `yaml:"severity,omitempty" json:"severity,omitempty"`
+	Labels   map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Webhooks []string          `yaml:"webhooks" json:"webhooks"`
+	Suppress *Suppress         `yaml:"suppress,omitempty" json:"suppress,omitempty"`
 }
 
 // Suppress limits how many alerts a rule may send per time window.
@@ -105,7 +110,9 @@ type CompiledRule struct {
 	ExcludeRe *regexp.Regexp
 	GroupIdx  int        // index of Suppress.GroupBy in Re, or -1
 	Pre       *Prefilter // cheap pre-check before Re; nil when none applies
-	Hooks     []*CompiledWebhook
+	// Absence is set for absence rules; Re is then the Absent pattern.
+	Absence bool
+	Hooks   []*CompiledWebhook
 }
 
 // SuppressWindow returns the suppression window, or 0 when disabled.
@@ -221,20 +228,31 @@ func compile(raw []byte, f *File, opts Options) (*Compiled, error) {
 		if len(r.Files) == 0 {
 			errs = append(errs, fmt.Errorf("%s: at least one file is required", where))
 		}
-		if r.Pattern == "" {
-			errs = append(errs, fmt.Errorf("%s: pattern is required", where))
+		switch {
+		case r.Pattern == "" && r.Absent == "":
+			errs = append(errs, fmt.Errorf("%s: pattern (or absent) is required", where))
+		case r.Pattern != "" && r.Absent != "":
+			errs = append(errs, fmt.Errorf("%s: use either pattern or absent, not both", where))
+		case r.Absent != "" && r.For <= 0:
+			errs = append(errs, fmt.Errorf("%s: absent needs a positive for: (e.g. for: 10m)", where))
+		case r.Absent != "" && r.Suppress != nil:
+			errs = append(errs, fmt.Errorf("%s: suppress does not apply to absence rules (they alert once, then once on recovery)", where))
 		}
 		if len(r.Webhooks) == 0 {
 			errs = append(errs, fmt.Errorf("%s: at least one webhook is required", where))
 		}
-		cr := &CompiledRule{Rule: r, GroupIdx: -1}
-		re, err := regexp.Compile(r.Pattern)
+		cr := &CompiledRule{Rule: r, GroupIdx: -1, Absence: r.Absent != ""}
+		src, field := r.Pattern, "pattern"
+		if cr.Absence {
+			src, field = r.Absent, "absent"
+		}
+		re, err := regexp.Compile(src)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: pattern: %w", where, err))
+			errs = append(errs, fmt.Errorf("%s: %s: %w", where, field, err))
 		}
 		cr.Re = re
 		if re != nil {
-			cr.Pre = NewPrefilter(r.Pattern)
+			cr.Pre = NewPrefilter(src)
 		}
 		if r.Exclude != "" {
 			ex, err := regexp.Compile(r.Exclude)
