@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · grepalert</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="login-page">
+<main class="login-box">
+  <h1><span>grep</span>alert</h1>
+  <p class="muted">Sign in to the dashboard</p>
+  <div id="login-error" class="msg bad" hidden></div>
+  <a id="sso" class="button primary sso" hidden href="/auth/oidc">Sign in with SSO</a>
+  <div id="or" class="or" hidden><span>or</span></div>
+  <form id="local" hidden autocomplete="on">
+    <label class="field"><span>Username</span><input type="text" name="username" autocomplete="username" required></label>
+    <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+  <p id="none" class="muted" hidden>No sign-in method is configured.</p>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>

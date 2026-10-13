@@ -1,7 +1,7 @@
 # Multi-stage build. Pick a binary with --target:
 #   docker build --target agent -t grepalert-agent .
 #   docker build --target dashboard -t grepalert-dashboard .
-ARG GO_VERSION=1.27
+ARG GO_VERSION=1.27.2
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src

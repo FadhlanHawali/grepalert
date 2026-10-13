@@ -26,9 +26,6 @@ func main() {
 		log.Error("load config", "err", err)
 		os.Exit(1)
 	}
-	if cfg.Auth.Password == "" {
-		log.Warn("no auth.password configured: the dashboard is unauthenticated")
-	}
 	store, err := dashboard.OpenStore(cfg.DataFile)
 	if err != nil {
 		log.Error("open data file", "err", err)
@@ -39,6 +36,10 @@ func main() {
 	defer stop()
 
 	s := dashboard.New(cfg, store, log)
+	if !s.AuthConfigured() {
+		log.Warn("no sign-in configured (auth.password, auth.oidc or local users): anyone who can reach the dashboard is an admin")
+	}
+	defer s.Close()
 	go s.RunReconciler(ctx)
 	go s.RunFleet(ctx)
 

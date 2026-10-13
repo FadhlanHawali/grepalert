@@ -210,6 +210,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("agent enrolled", "agent", rec.Name, "hostname", rec.Hostname, "labels", rec.Labels, "via", rec.EnrolledVia)
+	s.audit.system("token:"+rec.EnrolledVia, "agent", "agent.enroll", rec.Name, EffectiveGroup(rec, s.store.Groups()),
+		fmt.Sprintf("hostname %s, labels %s, from %s", rec.Hostname, labelsString(rec.Labels), clientIP(r)), "")
 	writeJSON(w, http.StatusOK, map[string]string{"agent_id": rec.ID, "secret": secret, "name": rec.Name})
 	s.kickMembership(rec.Name)
 }

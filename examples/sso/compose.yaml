@@ -1,0 +1,21 @@
+# Keycloak with a "grepalert" realm, for trying single sign-on locally.
+#
+#   docker compose up -d                      # Keycloak on http://localhost:8180
+#   go run ./cmd/grepalert-dashboard -config examples/sso/dashboard.yaml
+#   open http://localhost:9420
+#
+# Test users (passwords in realm-grepalert.json): alice (group db-team),
+# bob (no group: signs in but sees nothing), ops-admin (group grepalert-admins).
+# Keycloak admin console: http://localhost:8180 (admin / admin).
+name: grepalert-sso
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./realm-grepalert.json:/opt/keycloak/data/import/realm-grepalert.json:ro
+    ports: ["8180:8080"]

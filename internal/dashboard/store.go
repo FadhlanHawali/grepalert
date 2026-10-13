@@ -88,6 +88,12 @@ type storeData struct {
 	Tokens   []EnrollmentToken `json:"enrollment_tokens,omitempty"`
 	Silences []Silence         `json:"silences,omitempty"`
 	Settings Settings          `json:"settings"`
+
+	// Access control.
+	Users      []LocalUser          `json:"users,omitempty"`
+	Bindings   []RoleBinding        `json:"role_bindings,omitempty"`
+	SessionKey []byte               `json:"session_key,omitempty"`
+	ValidAfter map[string]time.Time `json:"sessions_valid_after,omitempty"`
 }
 
 // Store persists agents and groups to a JSON file. It holds tokens, so the

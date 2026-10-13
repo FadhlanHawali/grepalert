@@ -542,11 +542,24 @@ func contains(list []string, v string) bool {
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	limit := 300
 	fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
-	writeJSON(w, http.StatusOK, s.fleet.History(r.URL.Query().Get("group"), min(max(limit, 1), historySize)))
+	perms := authOf(r).perms
+	out := []HistoryEntry{}
+	for _, e := range s.fleet.History(r.URL.Query().Get("group"), historySize) {
+		if len(out) < min(max(limit, 1), historySize) && perms.Can(RoleViewer, e.Group) {
+			out = append(out, e)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleListSilences(w http.ResponseWriter, r *http.Request) {
-	list := s.store.Silences()
+	perms := authOf(r).perms
+	list := []Silence{}
+	for _, sl := range s.store.Silences() {
+		if perms.Can(RoleViewer, sl.Group) {
+			list = append(list, sl)
+		}
+	}
 	sort.Slice(list, func(i, j int) bool { return list[i].EndsAt.After(list[j].EndsAt) })
 	writeJSON(w, http.StatusOK, list)
 }
@@ -567,6 +580,9 @@ func (s *Server) handleAddSilence(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("duration must be between 1m and 30 days, e.g. 2h"))
 		return
 	}
+	if !s.need(w, r, RoleEditor, req.Group) {
+		return
+	}
 	now := time.Now()
 	sl, err := s.store.AddSilence(Silence{Group: req.Group, Agents: clean(req.Agents), Rules: clean(req.Rules),
 		StartsAt: now, EndsAt: now.Add(d), Reason: strings.TrimSpace(req.Reason)})
@@ -575,6 +591,7 @@ func (s *Server) handleAddSilence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("silence created", "id", sl.ID, "group", sl.Group, "rules", sl.Rules, "agents", sl.Agents, "until", sl.EndsAt, "reason", sl.Reason)
+	s.audit.record(r, "silence.create", sl.ID, sl.Group, "ok", fmt.Sprintf("until %s; rules %v; agents %v; reason: %s", sl.EndsAt.Format(time.RFC3339), sl.Rules, sl.Agents, sl.Reason), "")
 	writeJSON(w, http.StatusOK, sl)
 }
 
@@ -589,10 +606,25 @@ func clean(list []string) []string {
 }
 
 func (s *Server) handleExpireSilence(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.ExpireSilence(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	var target *Silence
+	for _, sl := range s.store.Silences() {
+		if sl.ID == id {
+			target = &sl
+		}
+	}
+	if target == nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("silence not found"))
+		return
+	}
+	if !s.need(w, r, RoleEditor, target.Group) {
+		return
+	}
+	if err := s.store.ExpireSilence(id); err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	s.audit.record(r, "silence.end", id, target.Group, "ok", "reason was: "+target.Reason, "")
 	writeJSON(w, http.StatusOK, map[string]string{"expired": r.PathValue("id")})
 }
 
@@ -612,10 +644,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	before := s.store.Settings()
 	if err := s.store.SetSettings(st); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	s.audit.record(r, "settings.update", "settings", "", "ok", "", lineDiff(settingsText(before), settingsText(st)))
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -648,5 +682,11 @@ func (s *Server) handleTestOps(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	s.audit.record(r, "settings.test_ops", maskURL(h.URL), group, "ok", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"sent": h.URL})
+}
+
+func settingsText(st Settings) string {
+	return fmt.Sprintf("ops webhook: %s\nops template: %s\nagent-down after: %s\n",
+		maskURL(st.OpsWebhook.URL), orNone(st.OpsWebhook.Template), orNone(st.AgentDownAfter))
 }

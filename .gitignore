@@ -6,3 +6,5 @@
 /rules.yaml
 grepalert.state.json
 dashboard-data.json
+audit.log
+audit.log.*

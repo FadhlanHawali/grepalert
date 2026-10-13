@@ -4,8 +4,8 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"embed"
 	"encoding/json"
@@ -15,6 +15,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,10 @@ type Server struct {
 
 	fleet *fleet // fleet dedupe, silences, agent-down alerts, history
 
+	audit    *auditLog
+	limiter  *loginLimiter
+	oidcInit oidcOnce
+
 	stopping     chan struct{} // closed by Shutdown to release held polls
 	stoppingOnce sync.Once
 }
@@ -66,6 +72,8 @@ func New(cfg Config, store *Store, log *slog.Logger) *Server {
 		stopping:    make(chan struct{}),
 	}
 	s.fleet = newFleet(s)
+	s.audit = openAudit(cfg.AuditFile, log)
+	s.limiter = &loginLimiter{hits: map[string][]time.Time{}}
 	return s
 }
 
@@ -146,42 +154,68 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFS, "web")
 	mux.Handle("GET /", http.FileServerFS(static))
+	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, static, "login.html")
+	})
+
+	// Sign-in (public paths are listed in isPublic).
+	mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
+	mux.HandleFunc("POST /auth/local", s.handleLocalLogin)
+	mux.HandleFunc("GET /auth/oidc", s.handleOIDCStart)
+	mux.HandleFunc("GET /auth/callback", s.handleOIDCCallback)
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/me", s.handleMe)
+
+	// Access policy for every route, in one place. Any signed-in user may
+	// call the routes without a guard; they filter what they return.
+	admin := func(h http.HandlerFunc) http.HandlerFunc { return s.guard(RoleAdmin, noScope, h) }
+	onAgent := func(role Role, h http.HandlerFunc) http.HandlerFunc { return s.guard(role, s.agentScope, h) }
+	onGroup := func(role Role, h http.HandlerFunc) http.HandlerFunc { return s.guard(role, groupScope, h) }
 
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 
-	mux.HandleFunc("POST /api/agents/test", s.handleTestConnection)
-	mux.HandleFunc("POST /api/agents", s.handleAddAgent)
-	mux.HandleFunc("PUT /api/agents/{name}", s.handleUpdateAgent)
-	mux.HandleFunc("DELETE /api/agents/{name}", s.handleDeleteAgent)
-	mux.HandleFunc("GET /api/agents/{name}/status", s.proxy("GET", "/api/v1/status"))
-	mux.HandleFunc("GET /api/agents/{name}/rules", s.proxy("GET", "/api/v1/rules"))
-	mux.HandleFunc("PUT /api/agents/{name}/rules", s.proxy("PUT", "/api/v1/rules"))
-	mux.HandleFunc("POST /api/agents/{name}/validate", s.proxy("POST", "/api/v1/rules/validate"))
-	mux.HandleFunc("GET /api/agents/{name}/events", s.proxy("GET", "/api/v1/events"))
-	mux.HandleFunc("POST /api/agents/{name}/test", s.proxy("POST", "/api/v1/test"))
+	mux.HandleFunc("POST /api/agents/test", admin(s.handleTestConnection))
+	mux.HandleFunc("POST /api/agents", admin(s.handleAddAgent))
+	mux.HandleFunc("PUT /api/agents/{name}", admin(s.handleUpdateAgent))
+	mux.HandleFunc("DELETE /api/agents/{name}", admin(s.handleDeleteAgent))
+	mux.HandleFunc("POST /api/agents/{name}/revoke", admin(s.handleSetRevoked(true)))
+	mux.HandleFunc("POST /api/agents/{name}/allow", admin(s.handleSetRevoked(false)))
+	mux.HandleFunc("GET /api/agents/{name}/status", onAgent(RoleViewer, s.proxy("GET", "/api/v1/status")))
+	mux.HandleFunc("GET /api/agents/{name}/rules", onAgent(RoleViewer, s.proxy("GET", "/api/v1/rules")))
+	mux.HandleFunc("GET /api/agents/{name}/events", onAgent(RoleViewer, s.proxy("GET", "/api/v1/events")))
+	mux.HandleFunc("POST /api/agents/{name}/test", onAgent(RoleViewer, s.proxy("POST", "/api/v1/test")))
+	mux.HandleFunc("PUT /api/agents/{name}/rules", onAgent(RoleEditor, s.proxy("PUT", "/api/v1/rules")))
+	mux.HandleFunc("POST /api/agents/{name}/validate", onAgent(RoleEditor, s.proxy("POST", "/api/v1/rules/validate")))
 
-	mux.HandleFunc("POST /api/groups", s.handleAddGroup)
-	mux.HandleFunc("PUT /api/groups/{name}", s.handleUpdateGroup)
-	mux.HandleFunc("DELETE /api/groups/{name}", s.handleDeleteGroup)
-	mux.HandleFunc("GET /api/groups/{name}/rules", s.handleGroupRules)
-	mux.HandleFunc("PUT /api/groups/{name}/rules", s.handleSetGroupRules)
-	mux.HandleFunc("POST /api/groups/{name}/validate", s.handleValidate)
-	mux.HandleFunc("POST /api/groups/{name}/sync", s.handleSyncGroup)
-	mux.HandleFunc("GET /api/groups/{name}/preview", s.handlePreview)
+	mux.HandleFunc("POST /api/groups", admin(s.handleAddGroup))
+	mux.HandleFunc("PUT /api/groups/{name}", admin(s.handleUpdateGroup))
+	mux.HandleFunc("DELETE /api/groups/{name}", admin(s.handleDeleteGroup))
+	mux.HandleFunc("GET /api/groups/{name}/rules", onGroup(RoleViewer, s.handleGroupRules))
+	mux.HandleFunc("GET /api/groups/{name}/preview", onGroup(RoleViewer, s.handlePreview))
+	mux.HandleFunc("PUT /api/groups/{name}/rules", onGroup(RoleEditor, s.handleSetGroupRules))
+	mux.HandleFunc("POST /api/groups/{name}/validate", onGroup(RoleEditor, s.handleValidate))
+	mux.HandleFunc("POST /api/groups/{name}/sync", onGroup(RoleEditor, s.handleSyncGroup))
 
-	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
-	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
-	mux.HandleFunc("DELETE /api/tokens/{id}", s.handleRevokeToken)
-	mux.HandleFunc("POST /api/agents/{name}/revoke", s.handleSetRevoked(true))
-	mux.HandleFunc("POST /api/agents/{name}/allow", s.handleSetRevoked(false))
+	mux.HandleFunc("GET /api/tokens", admin(s.handleListTokens))
+	mux.HandleFunc("POST /api/tokens", admin(s.handleCreateToken))
+	mux.HandleFunc("DELETE /api/tokens/{id}", admin(s.handleRevokeToken))
 
 	mux.HandleFunc("GET /api/alerts", s.handleHistory)
 	mux.HandleFunc("GET /api/silences", s.handleListSilences)
-	mux.HandleFunc("POST /api/silences", s.handleAddSilence)
-	mux.HandleFunc("DELETE /api/silences/{id}", s.handleExpireSilence)
-	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
-	mux.HandleFunc("POST /api/settings/test-ops", s.handleTestOps)
+	mux.HandleFunc("POST /api/silences", s.handleAddSilence)           // editor of the silenced group, checked inside
+	mux.HandleFunc("DELETE /api/silences/{id}", s.handleExpireSilence) // same
+	mux.HandleFunc("GET /api/settings", admin(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", admin(s.handlePutSettings))
+	mux.HandleFunc("POST /api/settings/test-ops", admin(s.handleTestOps))
+
+	mux.HandleFunc("GET /api/users", admin(s.handleListUsers))
+	mux.HandleFunc("PUT /api/users/{name}", admin(s.handleSetUser))
+	mux.HandleFunc("DELETE /api/users/{name}", admin(s.handleDeleteUser))
+	mux.HandleFunc("GET /api/access", admin(s.handleListBindings))
+	mux.HandleFunc("POST /api/access", admin(s.handleAddBinding))
+	mux.HandleFunc("DELETE /api/access/{id}", admin(s.handleDeleteBinding))
+	mux.HandleFunc("GET /api/audit", admin(s.handleAudit))
+	mux.HandleFunc("GET /api/audit/export", admin(s.handleAuditExport))
 
 	// Endpoints for connected agents. They authenticate with enrollment
 	// tokens or agent credentials, not with the dashboard login.
@@ -192,31 +226,25 @@ func (s *Server) Handler() http.Handler {
 	return s.auth(mux)
 }
 
-func (s *Server) auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/agent/v1/") {
-			next.ServeHTTP(w, r)
-			return
+// guard runs h only if the caller has role in the scope scopeOf returns.
+func (s *Server) guard(role Role, scopeOf func(*http.Request) string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.need(w, r, role, scopeOf(r)) {
+			h(w, r)
 		}
-		if pw := s.cfg.Auth.Password; pw != "" {
-			u, p, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(s.cfg.Auth.Username)) != 1 ||
-				subtle.ConstantTimeCompare([]byte(p), []byte(pw)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="grepalert"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		// CSRF guard: browsers cannot send this header cross-site without a
-		// CORS preflight, which we never approve.
-		if r.Method != http.MethodGet && r.Header.Get("X-Requested-With") != "grepalert" {
-			http.Error(w, "missing X-Requested-With header", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(w, r)
-	})
+	}
+}
+
+func noScope(*http.Request) string      { return "" }
+func groupScope(r *http.Request) string { return r.PathValue("name") }
+
+// agentScope is the group of the agent in the path ("" if ungrouped or
+// unknown; unknown agents then get a 404 from the handler).
+func (s *Server) agentScope(r *http.Request) string {
+	if a, ok := s.store.Agent(r.PathValue("name")); ok {
+		return EffectiveGroup(a, s.store.Groups())
+	}
+	return ""
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -293,6 +321,15 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	recs, groups, down := s.store.Agents(), s.store.Groups(), s.fleet.downStates()
+	// Only what the caller may see: agents and groups in scope of their roles.
+	perms := authOf(r).perms
+	visible := recs[:0]
+	for _, a := range recs {
+		if perms.Can(RoleViewer, EffectiveGroup(a, groups)) {
+			visible = append(visible, a)
+		}
+	}
+	recs = visible
 	out := struct {
 		Agents []agentView `json:"agents"`
 		Groups []groupView `json:"groups"`
@@ -325,7 +362,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}(i, a)
 	}
 	wg.Wait()
-	for _, g := range s.store.Groups() {
+	for _, g := range groups {
+		if !perms.Can(RoleViewer, g.Name) {
+			continue
+		}
 		out.Groups = append(out.Groups, s.groupView(g))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -420,6 +460,7 @@ func (s *Server) handleAddAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("agent added", "agent", rec.Name, "url", rec.URL, "group", rec.Group)
+	s.audit.record(r, "agent.add", rec.Name, rec.Group, "ok", "url "+rec.URL, "")
 	writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "push": s.pushToNewMember(r.Context(), rec)})
 }
 
@@ -458,6 +499,8 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if g := EffectiveGroup(rec, groups); g != "" && (g != EffectiveGroup(old, groups) || rec.URL != old.URL) {
 		push = s.pushToNewMember(r.Context(), rec)
 	}
+	s.audit.record(r, "agent.update", rec.Name, EffectiveGroup(rec, groups), "ok", fmt.Sprintf("group %q → %q", old.Group, rec.Group),
+		lineDiff(agentSettingsText(old), agentSettingsText(rec)))
 	writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "push": push})
 }
 
@@ -477,6 +520,11 @@ func (s *Server) handleSetRevoked(revoked bool) http.HandlerFunc {
 			return
 		}
 		s.log.Info("agent access changed", "agent", rec.Name, "revoked", revoked)
+		action := "agent.allow"
+		if revoked {
+			action = "agent.revoke"
+		}
+		s.audit.record(r, action, rec.Name, EffectiveGroup(rec, s.store.Groups()), "ok", "", "")
 		if revoked {
 			s.wakeTunnel(rec.ID)
 		}
@@ -520,6 +568,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("enrollment token created", "name", t.Name, "expires", t.ExpiresAt)
+	s.audit.record(r, "token.create", t.Name, "", "ok", "prefix "+t.Prefix+", expires "+fmtTime(t.ExpiresAt), "")
 	writeJSON(w, http.StatusOK, map[string]any{"id": t.ID, "name": t.Name, "token": raw, "expires_at": t.ExpiresAt})
 }
 
@@ -528,6 +577,7 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	s.audit.record(r, "token.revoke", r.PathValue("id"), "", "ok", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"revoked": r.PathValue("id")})
 }
 
@@ -540,6 +590,7 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	s.clMu.Lock()
 	delete(s.clients, name)
 	s.clMu.Unlock()
+	s.audit.record(r, "agent.remove", name, "", "ok", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
 }
 
@@ -551,8 +602,8 @@ func (s *Server) proxy(method, path string) http.HandlerFunc {
 			writeErr(w, http.StatusNotFound, errors.New("unknown agent"))
 			return
 		}
-		if method == http.MethodPut && rec.Group != "" {
-			writeErr(w, http.StatusConflict, fmt.Errorf("this agent's rules are managed by group %q; edit the group's rules instead", rec.Group))
+		if g := EffectiveGroup(rec, s.store.Groups()); method == http.MethodPut && g != "" {
+			writeErr(w, http.StatusConflict, fmt.Errorf("this agent's rules are managed by group %q; edit the group's rules instead", g))
 			return
 		}
 		p := path
@@ -566,10 +617,34 @@ func (s *Server) proxy(method, path string) http.HandlerFunc {
 			hdr.Set("Content-Type", r.Header.Get("Content-Type"))
 			hdr.Set("X-Rules-Origin", "dashboard")
 		}
+		// Rule edits are audited with a diff, so read the new rules and fetch
+		// the current ones first.
+		var before string
+		var sent []byte
+		if method == http.MethodPut {
+			raw, err := io.ReadAll(body)
+			if err != nil {
+				writeErr(w, http.StatusRequestEntityTooLarge, err)
+				return
+			}
+			sent, body = raw, bytes.NewReader(raw)
+			if old, err := s.client(rec).call(r.Context(), http.MethodGet, "/api/v1/rules", nil, nil); err == nil {
+				b, _ := io.ReadAll(io.LimitReader(old.Body, maxProxyBody))
+				old.Body.Close()
+				before = string(b)
+			}
+		}
 		resp, err := s.client(rec).call(r.Context(), method, p, body, hdr)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err)
 			return
+		}
+		if method == http.MethodPut {
+			if resp.StatusCode < 300 {
+				s.audit.record(r, "agent.rules.update", rec.Name, "", "ok", "", lineDiff(before, string(sent)))
+			} else {
+				s.audit.record(r, "agent.rules.update", rec.Name, "", "failed", fmt.Sprintf("agent answered HTTP %d", resp.StatusCode), "")
+			}
 		}
 		defer resp.Body.Close()
 		for _, h := range []string{"Content-Type", "X-Rules-Hash"} {
@@ -614,6 +689,7 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("group created", "group", g.Name, "source", g.Source)
+	s.audit.record(r, "group.create", g.Name, g.Name, "ok", "", lineDiff("", groupSettingsText(g)+"\n"+g.Rules))
 	resp := map[string]any{"name": g.Name}
 	// Fetch from git if needed, and push to members (including agents its
 	// label selector just picked up).
@@ -629,11 +705,14 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
+	before, _ := s.store.Group(name)
 	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook)}
 	if err := s.store.UpdateGroup(g); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	after, _ := s.store.Group(name)
+	s.audit.record(r, "group.update", name, name, "ok", "", lineDiff(groupSettingsText(before), groupSettingsText(after)))
 	resp := map[string]any{"name": name}
 	if err := s.syncGroup(r.Context(), name, "settings changed", g.Source == "git"); err != nil {
 		resp["sync_error"] = err.Error()
@@ -650,6 +729,7 @@ func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	s.stMu.Lock()
 	delete(s.groupStates, name)
 	s.stMu.Unlock()
+	s.audit.record(r, "group.delete", name, name, "ok", "its agents are now ungrouped", "")
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
 }
 
@@ -689,6 +769,7 @@ func (s *Server) handleSetGroupRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.audit.record(r, "group.rules.update", name, name, "ok", fmt.Sprintf("version %s → %s", orNone(g.RulesHash), c.Hash), lineDiff(g.Rules, string(raw)))
 	if err := s.syncGroup(r.Context(), name, "rules edited", false); err != nil && !errors.Is(err, errSyncing) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -719,9 +800,11 @@ func (s *Server) handleSyncGroup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	if err := s.syncGroup(ctx, name, "manual", true); err != nil {
+		s.audit.record(r, "group.sync", name, name, "failed", err.Error(), "")
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	s.audit.record(r, "group.sync", name, name, "ok", "", "")
 	writeJSON(w, http.StatusOK, s.snapshotState(name))
 }
 
@@ -756,4 +839,63 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // for them. Agents simply reconnect to the next dashboard instance.
 func (s *Server) Shutdown() {
 	s.stoppingOnce.Do(func() { close(s.stopping) })
+}
+
+// ---- audit helpers ----
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+func fmtTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// groupSettingsText renders a group's settings (not its rules, no secrets)
+// for audit diffs.
+func groupSettingsText(g GroupRecord) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "description: %s\nsource: %s\n", g.Description, g.Source)
+	if g.Git != nil {
+		fmt.Fprintf(&b, "git: %s %s @ %s : %s (every %s, token %s)\n", g.Git.Provider, g.Git.Repo, g.Git.Ref, g.Git.Path,
+			orNone(g.Git.Interval), map[bool]string{true: "set", false: "none"}[g.Git.Token != ""])
+	}
+	fmt.Fprintf(&b, "selector: %s\nfleet: disabled=%v wait=%s window=%s\nagent-down webhook: %s\n",
+		labelsString(g.Selector), g.Fleet.Disabled, orNone(g.Fleet.Wait), orNone(g.Fleet.Window), maskURL(g.OpsWebhookURL))
+	return b.String()
+}
+
+func agentSettingsText(a AgentRecord) string {
+	return fmt.Sprintf("url: %s\ngroup: %s\ntoken: %s\ninsecure_skip_verify: %v\n", orNone(a.URL), orNone(a.Group),
+		map[bool]string{true: "set", false: "none"}[a.Token != ""], a.InsecureSkipVerify)
+}
+
+func labelsString(l map[string]string) string {
+	keys := make([]string, 0, len(l))
+	for k := range l {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+l[k])
+	}
+	return orNone(strings.Join(parts, ","))
+}
+
+// maskURL keeps scheme and host only: webhook URLs often embed secrets.
+func maskURL(u string) string {
+	if u == "" || strings.HasPrefix(u, "${") {
+		return orNone(u)
+	}
+	if p, err := url.Parse(u); err == nil && p.Host != "" {
+		return p.Scheme + "://" + p.Host + "/…"
+	}
+	return "(set)"
 }

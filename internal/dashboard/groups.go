@@ -136,6 +136,8 @@ func (s *Server) doSyncGroup(ctx context.Context, name string, fetch bool, st *g
 			if err := s.store.SetGroupRules(name, raw); err != nil {
 				return err
 			}
+			s.audit.system("git", "git", "group.rules.sync", name, name,
+				fmt.Sprintf("version %s → %s from %s", orNone(g.RulesHash), rules.Hash(raw), gitSourceText(g.Git)), lineDiff(g.Rules, string(raw)))
 			s.log.Info("group rules updated from git", "group", name, "hash", rules.Hash(raw))
 		}
 		g, _ = s.store.Group(name)
@@ -227,4 +229,14 @@ func (s *Server) pushToNewMember(ctx context.Context, a AgentRecord) *PushResult
 	st.Results[a.Name] = res
 	s.stMu.Unlock()
 	return &res
+}
+
+func gitSourceText(g *GitSource) string {
+	if g == nil {
+		return ""
+	}
+	if g.Provider == "url" {
+		return maskURL(g.Path)
+	}
+	return fmt.Sprintf("%s %s@%s:%s", g.Provider, g.Repo, g.Ref, g.Path)
 }

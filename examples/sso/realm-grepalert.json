@@ -1,0 +1,30 @@
+{
+  "realm": "grepalert",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{"name": "grepalert-admins"}, {"name": "db-team"}],
+  "clients": [{
+    "clientId": "grepalert-dashboard",
+    "enabled": true,
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "secret": "vHTgpLg1J6eML4UGzRtiBXQkfVpOufim",
+    "standardFlowEnabled": true,
+    "directAccessGrantsEnabled": false,
+    "redirectUris": ["http://localhost:9420/auth/callback"],
+    "webOrigins": ["http://localhost:9420"],
+    "attributes": {"pkce.code.challenge.method": "S256"},
+    "protocolMappers": [{
+      "name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
+      "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true"}
+    }]
+  }],
+  "users": [
+    {"username": "alice", "email": "alice@example.com", "firstName": "Alice", "lastName": "DB", "emailVerified": true, "enabled": true,
+     "credentials": [{"type": "password", "value": "VgQT35M1RclkvKZ1"}], "groups": ["db-team"]},
+    {"username": "bob", "email": "bob@example.com", "firstName": "Bob", "lastName": "NoRole", "emailVerified": true, "enabled": true,
+     "credentials": [{"type": "password", "value": "YFsJGZk1ivbFTps"}]},
+    {"username": "ops-admin", "email": "ops@example.com", "firstName": "Ops", "lastName": "Admin", "emailVerified": true, "enabled": true,
+     "credentials": [{"type": "password", "value": "ZGRR5nUYLi1vr4ZU"}], "groups": ["grepalert-admins"]}
+  ]
+}
