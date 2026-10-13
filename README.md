@@ -331,7 +331,29 @@ With no `template`, the agent POSTs the alert as JSON:
  "group_key":"502","time":"2026-10-12T20:41:37+07:00","suppressed":0,"text":"CRITICAL [web-01] nginx-5xx matched in …"}
 ```
 
-`kind` is `match`, `summary`, `absent`, `recovered`, `fleet_summary`, `agent_down` or `agent_up`. Fleet alerts also carry `hosts`, `host_count` and `group`; `via` says whether the dashboard or the agent delivered it, and `id` lets receivers drop duplicates. A `template` is a Go `text/template` rendered with the same fields (`.Rule`, `.Line`, `.Groups.status`, `.Text`, …). Template helpers: `json` (a safely quoted JSON string), `upper`, `lower`, `trunc N`.
+`kind` is `match`, `summary`, `absent`, `recovered`, `fleet_summary`, `agent_down` or `agent_up`. Fleet alerts also carry `hosts`, `host_count` and `group`; `via` says whether the dashboard or the agent delivered it, and `id` lets receivers drop duplicates. A `template` is a Go `text/template` rendered with the same fields (`.Rule`, `.Line`, `.Groups.status`, `.Text`, …). Template helpers: `json` (a safely quoted JSON string), `upper`, `lower`, `title` (`critical` → `Critical`), `trunc N`.
+
+**Sending only the parts of the line you need.** Name the parts in the pattern with `(?P<name>...)`; the template gets them as `.Groups.name`. For the line `Datasource DS1 is suspended because the pool is exhausted`:
+
+```yaml
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "%s, %s is suspended" (title .Severity) .Groups.datasource) }}}'
+
+rules:
+  - name: datasource-suspended
+    files: [/var/log/app/app.log]
+    pattern: 'Datasource (?P<datasource>\S+) is suspended because (?P<reason>.+)'
+    severity: critical
+    webhooks: [chat]
+    suppress: {window: 10m, group_by: datasource}   # one alert per datasource per 10 minutes
+```
+
+The webhook receives `{"text": "Critical, DS1 is suspended"}`.
+- **Summaries render the same way.** The "N more suppressed" summary carries the captured values of the last suppressed line, and so do fleet summaries, so the same template works for them too.
+- **Branching on the kind.** To word summaries differently, branch on the kind: `{{ if eq .Kind "summary" }}…{{ end }}`.
+- **Other fields.** `.Groups.reason` is there too, as are `.Agent`, `.Host` and `.Time`.
 
 ## Changing rules without restarting
 

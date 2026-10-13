@@ -200,15 +200,23 @@ func (e *engine) match(r *rules.CompiledRule, path string, line []byte, m []int)
 	a := e.newAlert(alert.KindMatch, r, path, string(line), now)
 	a.GroupKey = group
 	a.Suppressed = carried
-	if len(r.Re.SubexpNames()) > 1 {
-		a.Groups = map[string]string{}
-		for i, name := range r.Re.SubexpNames() {
-			if name != "" && m[2*i] >= 0 {
-				a.Groups[name] = string(line[m[2*i]:m[2*i+1]])
-			}
+	a.Groups = captures(r, line, m)
+	e.dispatch(a, r)
+}
+
+// captures returns the named groups of a match, for webhook templates
+// ({{ .Groups.name }}), or nil when the pattern has none.
+func captures(r *rules.CompiledRule, line []byte, m []int) map[string]string {
+	if len(r.Re.SubexpNames()) <= 1 || m == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for i, name := range r.Re.SubexpNames() {
+		if name != "" && m[2*i] >= 0 {
+			out[name] = string(line[m[2*i]:m[2*i+1]])
 		}
 	}
-	e.dispatch(a, r)
+	return out
 }
 
 // sweep closes expired suppression windows, emitting summary alerts for windows
@@ -228,6 +236,8 @@ func (e *engine) sweep() {
 			a := e.newAlert(alert.KindSummary, ss.rule, ss.lastFile, ss.lastLine, now)
 			a.GroupKey = k.group
 			a.Suppressed = ss.suppressed
+			// Templates can use the same captured values as for the match.
+			a.Groups = captures(ss.rule, []byte(ss.lastLine), ss.rule.Re.FindStringSubmatchIndex(ss.lastLine))
 			summaries = append(summaries, a)
 			rs = append(rs, ss.rule)
 		}

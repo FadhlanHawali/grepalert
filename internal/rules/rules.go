@@ -16,6 +16,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -365,6 +367,14 @@ var TemplateFuncs = template.FuncMap{
 	},
 	"upper": strings.ToUpper,
 	"lower": strings.ToLower,
+	// title capitalizes the first letter: critical -> Critical.
+	"title": func(s string) string {
+		r, n := utf8.DecodeRuneInString(s)
+		if n == 0 {
+			return s
+		}
+		return string(unicode.ToUpper(r)) + s[n:]
+	},
 	"trunc": func(n int, s string) string {
 		if len(s) <= n {
 			return s
