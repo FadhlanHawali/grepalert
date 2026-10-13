@@ -15,15 +15,34 @@ import (
 	"github.com/fadhlanhawali/grepalert/internal/rules"
 )
 
-// AgentRecord is an agent the dashboard is connected to.
+// AgentRecord is an agent the dashboard manages. It is either:
+//   - direct: the dashboard calls the agent's API at URL (added in the UI), or
+//   - connected: the agent enrolled itself and keeps an outbound connection to
+//     the dashboard, so it needs no inbound port.
 type AgentRecord struct {
-	Name               string    `json:"name"`
-	URL                string    `json:"url"`
-	Token              string    `json:"token,omitempty"` // may be ${ENV}
-	Group              string    `json:"group,omitempty"`
-	InsecureSkipVerify bool      `json:"insecure_skip_verify,omitempty"`
-	AddedAt            time.Time `json:"added_at"`
+	Name string `json:"name"`
+	Mode string `json:"mode,omitempty"` // "" (direct) or "connected"
+	// Group is set by an admin. When empty, a connected agent joins the first
+	// group (by name) whose label selector matches its labels.
+	Group   string    `json:"group,omitempty"`
+	AddedAt time.Time `json:"added_at"`
+
+	// Direct agents.
+	URL                string `json:"url,omitempty"`
+	Token              string `json:"token,omitempty"` // may be ${ENV}
+	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
+
+	// Connected agents.
+	ID          string            `json:"id,omitempty"`
+	SecretHash  string            `json:"secret_hash,omitempty"` // sha256 of the agent's secret
+	Labels      map[string]string `json:"labels,omitempty"`
+	Hostname    string            `json:"hostname,omitempty"`
+	Version     string            `json:"version,omitempty"`
+	EnrolledVia string            `json:"enrolled_via,omitempty"` // enrollment token name
+	Revoked     bool              `json:"revoked,omitempty"`
 }
+
+func (a AgentRecord) Connected() bool { return a.Mode == "connected" }
 
 // GitSource is where a git-backed group reads its rules from.
 type GitSource struct {
@@ -45,6 +64,9 @@ type GroupRecord struct {
 	Description string     `json:"description,omitempty"`
 	Source      string     `json:"source"` // "manual" or "git"
 	Git         *GitSource `json:"git,omitempty"`
+	// Selector auto-adds connected agents whose labels contain all of these
+	// key/value pairs (unless an admin assigned the agent elsewhere).
+	Selector map[string]string `json:"selector,omitempty"`
 	// Rules is the group's rule set: edited in the dashboard (manual) or the
 	// last version fetched from git.
 	Rules          string    `json:"rules,omitempty"`
@@ -54,9 +76,10 @@ type GroupRecord struct {
 }
 
 type storeData struct {
-	Version int           `json:"version"`
-	Agents  []AgentRecord `json:"agents"`
-	Groups  []GroupRecord `json:"groups"`
+	Version int               `json:"version"`
+	Agents  []AgentRecord     `json:"agents"`
+	Groups  []GroupRecord     `json:"groups"`
+	Tokens  []EnrollmentToken `json:"enrollment_tokens,omitempty"`
 }
 
 // Store persists agents and groups to a JSON file. It holds tokens, so the
@@ -154,24 +177,26 @@ func (s *Store) AddAgent(a AgentRecord) error {
 	return s.saveLocked()
 }
 
-// UpdateAgent replaces an agent's settings. An empty token keeps the old one.
-func (s *Store) UpdateAgent(a AgentRecord) error {
+// UpdateAgent applies fn to the named agent and saves. fn must not rename it.
+func (s *Store) UpdateAgent(name string, fn func(*AgentRecord) error) (AgentRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if a.Group != "" && !s.hasGroupLocked(a.Group) {
-		return fmt.Errorf("group %q does not exist", a.Group)
-	}
-	for i, x := range s.data.Agents {
-		if x.Name == a.Name {
-			if a.Token == "" {
-				a.Token = x.Token
-			}
-			a.AddedAt = x.AddedAt
-			s.data.Agents[i] = a
-			return s.saveLocked()
+	for i := range s.data.Agents {
+		if s.data.Agents[i].Name != name {
+			continue
 		}
+		a := s.data.Agents[i]
+		if err := fn(&a); err != nil {
+			return AgentRecord{}, err
+		}
+		if a.Group != "" && !s.hasGroupLocked(a.Group) {
+			return AgentRecord{}, fmt.Errorf("group %q does not exist", a.Group)
+		}
+		a.Name = name
+		s.data.Agents[i] = a
+		return a, s.saveLocked()
 	}
-	return fmt.Errorf("agent %q not found", a.Name)
+	return AgentRecord{}, fmt.Errorf("agent %q not found", name)
 }
 
 func (s *Store) DeleteAgent(name string) error {
@@ -214,20 +239,69 @@ func (s *Store) hasGroupLocked(name string) bool {
 	return false
 }
 
-// Members returns the agents in a group.
+// Members returns the (non-revoked) agents in a group, whether assigned by an
+// admin or matched by the group's label selector.
 func (s *Store) Members(group string) []AgentRecord {
+	groups := s.Groups()
 	var out []AgentRecord
 	for _, a := range s.Agents() {
-		if a.Group == group {
+		if !a.Revoked && EffectiveGroup(a, groups) == group {
 			out = append(out, a)
 		}
 	}
 	return out
 }
 
+// EffectiveGroup is the group an agent belongs to: the one an admin assigned,
+// otherwise the first group (sorted by name) whose selector matches its
+// labels, otherwise none. groups must be sorted by name.
+func EffectiveGroup(a AgentRecord, groups []GroupRecord) string {
+	if a.Group != "" {
+		return a.Group
+	}
+	for _, g := range groups {
+		if SelectorMatches(g.Selector, a.Labels) {
+			return g.Name
+		}
+	}
+	return ""
+}
+
+// SelectorMatches reports whether labels contain every pair in sel. An empty
+// selector matches nothing, so groups without one never auto-add agents.
+func SelectorMatches(sel, labels map[string]string) bool {
+	if len(sel) == 0 {
+		return false
+	}
+	for k, v := range sel {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+var validLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$`)
+
+// CheckLabels validates label keys and values.
+func CheckLabels(labels map[string]string) error {
+	if len(labels) > 32 {
+		return errors.New("at most 32 labels are allowed")
+	}
+	for k, v := range labels {
+		if !validLabel.MatchString(k) || !validLabel.MatchString(v) {
+			return fmt.Errorf("invalid label %q=%q: use 1-63 letters, digits, '.', '_', '/' or '-'", k, v)
+		}
+	}
+	return nil
+}
+
 func validateGroup(g *GroupRecord) error {
 	if err := checkName("group", g.Name); err != nil {
 		return err
+	}
+	if err := CheckLabels(g.Selector); err != nil {
+		return fmt.Errorf("selector: %w", err)
 	}
 	switch g.Source {
 	case "manual":

@@ -23,7 +23,12 @@ const maxRulesBody = 1 << 20
 //	POST /api/v1/rules/validate   validate rules without applying
 //	GET  /api/v1/events?limit=N   recent events, newest first
 //	POST /api/v1/test             {"line": "..."} → rules that would match
-func (a *Agent) Handler() http.Handler {
+func (a *Agent) Handler() http.Handler { return a.auth(a.api()) }
+
+// api is the unauthenticated API mux. The inbound listener wraps it with
+// token auth; the dashboard tunnel calls it directly, because the tunnel
+// connection is itself authenticated.
+func (a *Agent) api() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -84,7 +89,7 @@ func (a *Agent) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"matched": a.TestLine(req.Line)})
 	})
-	return a.auth(mux)
+	return mux
 }
 
 func (a *Agent) auth(next http.Handler) http.Handler {

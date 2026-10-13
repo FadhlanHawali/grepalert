@@ -4,3 +4,5 @@ auth:
   password: ${GREPALERT_DASHBOARD_PASSWORD}
 data_file: /var/lib/grepalert-dashboard/data.json
 reconcile_interval: 30s
+# Fixed enrollment token for automation; tokens can also be made in the UI.
+enrollment_token: ${GREPALERT_ENROLL_TOKEN}

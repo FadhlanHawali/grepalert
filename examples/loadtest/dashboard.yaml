@@ -2,3 +2,4 @@ listen: ":9400"
 auth: {username: admin, password: loadtest}
 data_file: /var/lib/grepalert-dashboard/data.json
 reconcile_interval: 30s
+enrollment_token: loadtest-enroll

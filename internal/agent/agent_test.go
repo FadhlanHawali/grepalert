@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -75,7 +76,10 @@ func TestRestartDoesNotMissLines(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"ERROR one", "ERROR while stopped", "ERROR two"}
+	// Each line alerts exactly once. Delivery order across lines is not
+	// guaranteed (webhooks are sent by parallel workers), so compare sorted.
+	want := []string{"ERROR one", "ERROR two", "ERROR while stopped"}
+	sort.Strings(got)
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("alerts = %q, want %q", got, want)
 	}

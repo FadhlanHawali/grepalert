@@ -33,17 +33,18 @@ docker compose up -d --build
 The demo stack runs:
 
 - **loggen** writes `app.log` and `access.log` into a shared volume. It adds random errors and rotates `app.log` every ~5 minutes.
-- **agent-1** (`app-server-1`) starts with no rules.
-- **agent-2** (`edge-proxy-1`) starts with its own nginx-5xx rule.
+- **agent-1** (`app-server-1`) **connects out** to the dashboard. It enrolls with the token from `.env` and has the labels `role=app`, `env=demo`. It starts with no rules.
+- **agent-2** (`edge-proxy-1`) is a **direct** agent: the dashboard connects to it. It starts with its own nginx-5xx rule.
 - **webhook-sink** receives the alerts. It also serves [examples/compose/git-repo/rules.yaml](examples/compose/git-repo/rules.yaml) over HTTP as a stand-in for a GitHub/GitLab repository.
 
-The dashboard starts empty. To walk through it:
+To walk through it:
 
-1. **New group** → name `app-servers` → *Rules come from: A git repository* → Provider **Raw URL** → `http://webhook-sink:9599/repo/rules.yaml` → Sync every minute → **Create group**. The rules are fetched immediately.
-2. In the group, click **Connect agent** → URL `http://agent-1:9300`, token `demo-agent-token` → **Test connection** → **Connect**. The group's rules are pushed to the agent right away.
-3. **Connect agent** again with `http://agent-2:9300`, and choose *No group*. Its own rules stay as they are, and you can edit them under the agent's **Rules** tab.
+1. **app-server-1 is already listed.** It enrolled by itself, and nobody entered its address.
+2. **New group** → name `app-servers` → *Auto-add agents with labels*: `role=app` → *Rules come from: A git repository* → Provider **Raw URL** → `http://webhook-sink:9599/repo/rules.yaml` → **Create group**. app-server-1 joins by its label and gets the rules from git right away.
+3. **Connect agent** → URL `http://agent-2:9300`, token `demo-agent-token` → **Test connection** → **Connect**, and choose *No group*. Its own rules stay as they are, and you can edit them under the agent's **Rules** tab.
 4. **New group** → `edge` → *This dashboard* → start with *A copy of edge-proxy-1's current rules*. Then click **Add an existing agent** and pick edge-proxy-1. Edit the rules in the group's **Rules** tab and click **Save & push**.
 5. Edit `git-repo/rules.yaml` on disk and click **Sync from git** (or wait a minute). Every agent in `app-servers` picks up the change without a restart.
+6. Under **Agent enrollment**, create a token to see the agent config it generates.
 
 To stop the demo:
 
@@ -75,13 +76,43 @@ export GREPALERT_DASHBOARD_PASSWORD=...
 grepalert-dashboard -config dashboard.yaml     # http://localhost:9400
 ```
 
-Then, in the UI, connect your agents (**Connect agent**: URL + token) and create groups (**New group**).
+Then, in the UI, create an enrollment token (**Agent enrollment**) for your agents, or connect to them by address (**Connect agent**), and create groups (**New group**).
+
+## Agents that connect to the dashboard (recommended)
+
+In most company networks the dashboard cannot reach the servers: NAT, firewalls, separate VPCs. So the agent connects **out** to the dashboard instead, and needs no inbound port:
+
+```yaml
+# /etc/grepalert/agent.yaml
+dashboard:
+  url: https://grepalert.example.com
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}   # used once, at first start
+labels:
+  role: web
+  env: prod
+rules_file: /var/lib/grepalert/rules.yaml
+```
+
+1. **Enroll.** On first start the agent presents the enrollment token. The dashboard gives it its own credential, which the agent saves to `identity_file` (default: next to `rules_file`, mode `0600`). After that the token is no longer needed. A restarted agent reuses its identity, so it never shows up twice.
+2. **Connect.** The agent keeps one HTTPS long-poll open to `/agent/v1/poll`. The dashboard sends its usual API calls (status, rules, events) down that connection, and the agent runs them against its own API in-process. Nothing listens on the server unless you set `listen`. HTTP proxies are honoured via `HTTPS_PROXY`, and custom CAs via `dashboard.ca_file`.
+3. **Join groups by label.** A group with *Auto-add agents with labels* `role=web,env=prod` picks up every agent that has those labels. It pushes them its rules right away, including agents that enroll later. If several groups match, the first by name wins. An admin can override this per agent (Settings → Group). Every agent also gets an `os` label automatically.
+
+**Tokens.** Create enrollment tokens under **Agent enrollment** in the UI, with an optional expiry. They are stored only as hashes and shown once. For automation (Ansible, Terraform, VM images), you can instead set a fixed `enrollment_token` in the dashboard config.
+
+**Revoking access.** Revoking a token stops *new* enrollments. To cut off an agent that already enrolled, use **Revoke access** in its Settings. The dashboard then refuses its connection and stops managing it. **Allow again** restores it within about 15 seconds.
+
+**Resilience.** Agents keep alerting with their last rules while the dashboard is down, and reconnect by themselves (with backoff, up to 30 s). If the dashboard's data is lost, agents notice they are unknown and enroll again with their token.
+
+Measured with 10 VMs that the dashboard could not reach directly:
+- All 10 enrolled within a second of starting.
+- A new `role=api` group reached all 10 in **111 ms**, and a rules edit reached them in **72 ms**.
+- After a dashboard restart, all 10 were back online in 7.6 s.
 
 ## Dashboard: agents and groups
 
-Agents and groups are created in the UI and saved to `data_file`. That file holds agent and git tokens, so it is written with `0600` permissions; keep it private. Token fields also accept `${ENV_VAR}`, which is read from the dashboard's environment when the dashboard uses the token.
+Agents and groups are managed in the UI and saved to `data_file`. That file holds direct-agent tokens, git tokens and enrollment-token hashes, so it is written with `0600` permissions; keep it private. Token fields also accept `${ENV_VAR}`, which is read from the dashboard's environment when the dashboard uses the token.
 
-- **Connect agent** asks for the agent's URL and token. **Test connection** shows what the agent reports about itself. If you leave the name empty, the agent's own `name` is used. If the agent isn't reachable yet, you can still choose **Save anyway**.
+- **Connect agent** (direct mode) asks for the agent's URL and token. Use it when the dashboard can reach the agent. **Test connection** shows what the agent reports about itself. If you leave the name empty, the agent's own `name` is used. If the agent isn't reachable yet, you can still choose **Save anyway**.
 - **Group**: a set of agents that share one rule set. The rules come from one of two places:
   - **This dashboard**: write the rules in the group's Rules tab. You can start from an example or from a copy of an agent's current rules. **Save & push** applies them to every member.
   - **A git repository**: GitHub (including Enterprise), GitLab (including self-hosted), or a raw URL. The dashboard fetches on a schedule or when you click **Sync from git**. If the new content in git is invalid, it is rejected, and agents keep the last good version.
@@ -183,6 +214,25 @@ Measured on an i5-13400F with 4 rules per line, one of them `(?i)panic|fatal|seg
 
 To get the most out of it, give rules a literal anchor where you can. `ERROR code=\w+` is fast. A rule with no literal text at all, such as `\d{3}ms$`, has to run the regexp on every line.
 
+### One agent, many files
+
+An agent does not start one goroutine per file. A small pool of reader workers (`read_workers`, 4 by default) polls all files:
+- **Busy files** are checked every `poll_interval` (500 ms).
+- **Idle files** back off to `idle_poll_interval` (2 s). This bounds how late the first line after a quiet period is noticed.
+- **Backlogs** are read in turns of at most 4 MB, so a file with a large backlog cannot delay alerts on the others.
+- **Stopping** gives every file a final read.
+
+Measured with one agent in a container with a 64 MB memory limit and 4 rules:
+
+| Files | Load | Result |
+|---|---|---|
+| 1 / 4 / 8 / 16 | Backlog of 1–8 GB, read from the start | 168 / 683 / 673 / 940 MB/s. CPU stays at about 4 cores (`read_workers`), and every file is read to the exact last byte. |
+| 100 | 1 MB/s each (100 MB/s total), live | Kept up, at ~40% of one core and 11 MB of container memory |
+| 500 | 0.1 MB/s each, live | Kept up, at ~45% CPU; 23 goroutines; 13 MB of container memory |
+| 500 | idle | **1.3% CPU**, 2 GC runs per 10 s |
+
+Raise `read_workers` to catch up faster on many files at once. It scales linearly up to the number of cores; with 8 cores, 8 files were read at 1.3 GB/s. Lower it to protect the applications running on the same VM.
+
 ### Load-test your own setup
 
 [examples/loadtest](examples/loadtest/compose.yaml) runs N simulated VMs. Each one runs `loadgen`, which writes realistic logs at a set rate with rotation, next to an agent. A dashboard and a webhook sink are included.
@@ -225,7 +275,8 @@ Delivery is at-least-once. After a crash, lines read since the last save (at mos
 
 ## Security
 
-- **Agent API**: requests need `Authorization: Bearer <token>`. `/healthz` is the only endpoint that doesn't. Set `tls_cert`/`tls_key`, or keep the agent on a private network.
+- **Connected agents** open no port (`listen` is off by default when `dashboard.url` is set). Each agent has its own revocable credential; the enrollment token is only used once. Put the dashboard behind HTTPS (`tls_cert`/`tls_key`, or a reverse proxy).
+- **Direct agents' API**: requests need `Authorization: Bearer <token>`. `/healthz` is the only endpoint that doesn't. Set `tls_cert`/`tls_key`, or keep the agent on a private network.
 - **Dashboard**: HTTP basic auth (`auth.password`). Write requests need an `X-Requested-With` header, which blocks CSRF.
 - **Secrets**: keep webhook URLs and tokens in environment variables (`${VAR}`), not in the rules repository.
 

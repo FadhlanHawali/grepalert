@@ -51,6 +51,7 @@ func main() {
 	}
 	go func() {
 		<-ctx.Done()
+		s.Shutdown() // release agents' held polls first
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)

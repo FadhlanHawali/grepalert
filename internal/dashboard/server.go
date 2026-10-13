@@ -38,6 +38,12 @@ type Server struct {
 
 	stMu        sync.Mutex
 	groupStates map[string]*groupState
+
+	tunMu   sync.Mutex
+	tunnels map[string]*tunnel // keyed by connected agent ID
+
+	stopping     chan struct{} // closed by Shutdown to release held polls
+	stoppingOnce sync.Once
 }
 
 type agentClient struct {
@@ -54,18 +60,33 @@ func New(cfg Config, store *Store, log *slog.Logger) *Server {
 		git:         &http.Client{Timeout: 30 * time.Second},
 		clients:     map[string]*agentClient{},
 		groupStates: map[string]*groupState{},
+		tunnels:     map[string]*tunnel{},
+		stopping:    make(chan struct{}),
 	}
 }
 
+// tunnelBase is the placeholder URL for connected agents; requests to it are
+// carried by tunnelTransport, never dialed.
+const tunnelBase = "http://agent.tunnel"
+
 // client returns a cached HTTP client for the agent, rebuilt when its
-// connection settings change.
+// connection settings change. Connected agents are reached through their
+// poll tunnel, direct agents over HTTP(S).
 func (s *Server) client(a AgentRecord) *agentClient {
 	s.clMu.Lock()
 	defer s.clMu.Unlock()
-	if c, ok := s.clients[a.Name]; ok && c.rec.URL == a.URL && c.rec.Token == a.Token && c.rec.InsecureSkipVerify == a.InsecureSkipVerify {
+	if c, ok := s.clients[a.Name]; ok && c.rec.URL == a.URL && c.rec.Token == a.Token &&
+		c.rec.InsecureSkipVerify == a.InsecureSkipVerify && c.rec.ID == a.ID && c.rec.Mode == a.Mode {
 		return c
 	}
-	c := newAgentClient(a)
+	var c *agentClient
+	if a.Connected() {
+		rec := a
+		rec.URL, rec.Token = tunnelBase, ""
+		c = &agentClient{rec: rec, http: &http.Client{Transport: &tunnelTransport{s: s, id: a.ID}, Timeout: 15 * time.Second}}
+	} else {
+		c = newAgentClient(a)
+	}
 	s.clients[a.Name] = c
 	return c
 }
@@ -139,11 +160,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/groups/{name}/validate", s.handleValidate)
 	mux.HandleFunc("POST /api/groups/{name}/sync", s.handleSyncGroup)
 	mux.HandleFunc("GET /api/groups/{name}/preview", s.handlePreview)
+
+	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
+	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
+	mux.HandleFunc("DELETE /api/tokens/{id}", s.handleRevokeToken)
+	mux.HandleFunc("POST /api/agents/{name}/revoke", s.handleSetRevoked(true))
+	mux.HandleFunc("POST /api/agents/{name}/allow", s.handleSetRevoked(false))
+
+	// Endpoints for connected agents. They authenticate with enrollment
+	// tokens or agent credentials, not with the dashboard login.
+	mux.HandleFunc("POST /agent/v1/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /agent/v1/poll", s.handlePoll)
+	mux.HandleFunc("POST /agent/v1/respond", s.handleRespond)
 	return s.auth(mux)
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/agent/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if pw := s.cfg.Auth.Password; pw != "" {
 			u, p, ok := r.BasicAuth()
 			if !ok || subtle.ConstantTimeCompare([]byte(u), []byte(s.cfg.Auth.Username)) != 1 ||
@@ -176,15 +213,24 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 // ---- overview ----
 
 type agentView struct {
-	Name               string          `json:"name"`
-	URL                string          `json:"url"`
-	Group              string          `json:"group,omitempty"`
-	HasToken           bool            `json:"has_token"`
-	InsecureSkipVerify bool            `json:"insecure_skip_verify,omitempty"`
-	AddedAt            time.Time       `json:"added_at"`
-	Online             bool            `json:"online"`
-	Error              string          `json:"error,omitempty"`
-	Status             json.RawMessage `json:"status,omitempty"`
+	Name string `json:"name"`
+	Mode string `json:"mode"` // "direct" or "connected"
+	URL  string `json:"url,omitempty"`
+	// Group is the effective group; Assigned tells whether an admin chose it
+	// (otherwise it came from a label selector).
+	Group              string            `json:"group,omitempty"`
+	Assigned           bool              `json:"assigned,omitempty"`
+	HasToken           bool              `json:"has_token"`
+	InsecureSkipVerify bool              `json:"insecure_skip_verify,omitempty"`
+	AddedAt            time.Time         `json:"added_at"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	Hostname           string            `json:"hostname,omitempty"`
+	EnrolledVia        string            `json:"enrolled_via,omitempty"`
+	Revoked            bool              `json:"revoked,omitempty"`
+	LastSeen           time.Time         `json:"last_seen,omitempty"`
+	Online             bool              `json:"online"`
+	Error              string            `json:"error,omitempty"`
+	Status             json.RawMessage   `json:"status,omitempty"`
 }
 
 type gitView struct {
@@ -198,18 +244,19 @@ type gitView struct {
 }
 
 type groupView struct {
-	Name           string     `json:"name"`
-	Description    string     `json:"description,omitempty"`
-	Source         string     `json:"source"`
-	Git            *gitView   `json:"git,omitempty"`
-	RulesHash      string     `json:"rules_hash,omitempty"`
-	RulesUpdatedAt time.Time  `json:"rules_updated_at"`
-	Members        []string   `json:"members"`
-	State          groupState `json:"state"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	Source         string            `json:"source"`
+	Git            *gitView          `json:"git,omitempty"`
+	Selector       map[string]string `json:"selector,omitempty"`
+	RulesHash      string            `json:"rules_hash,omitempty"`
+	RulesUpdatedAt time.Time         `json:"rules_updated_at"`
+	Members        []string          `json:"members"`
+	State          groupState        `json:"state"`
 }
 
 func (s *Server) groupView(g GroupRecord) groupView {
-	v := groupView{Name: g.Name, Description: g.Description, Source: g.Source, RulesHash: g.RulesHash,
+	v := groupView{Name: g.Name, Description: g.Description, Source: g.Source, Selector: g.Selector, RulesHash: g.RulesHash,
 		RulesUpdatedAt: g.RulesUpdatedAt, Members: []string{}, State: s.snapshotState(g.Name)}
 	if g.Git != nil {
 		v.Git = &gitView{Provider: g.Git.Provider, BaseURL: g.Git.BaseURL, Repo: g.Git.Repo, Ref: g.Git.Ref,
@@ -225,7 +272,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 
-	recs := s.store.Agents()
+	recs, groups := s.store.Agents(), s.store.Groups()
 	out := struct {
 		Agents []agentView `json:"agents"`
 		Groups []groupView `json:"groups"`
@@ -236,8 +283,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, a AgentRecord) {
 			defer wg.Done()
-			v := agentView{Name: a.Name, URL: a.URL, Group: a.Group, HasToken: a.Token != "",
-				InsecureSkipVerify: a.InsecureSkipVerify, AddedAt: a.AddedAt}
+			v := agentView{Name: a.Name, Mode: "direct", URL: a.URL, Group: EffectiveGroup(a, groups), Assigned: a.Group != "",
+				HasToken: a.Token != "", InsecureSkipVerify: a.InsecureSkipVerify, AddedAt: a.AddedAt}
+			if a.Connected() {
+				v.Mode, v.URL, v.Labels, v.Hostname, v.EnrolledVia = "connected", "", a.Labels, a.Hostname, a.EnrolledVia
+				v.Revoked, v.LastSeen = a.Revoked, s.lastSeenAt(a.ID)
+				if a.Revoked {
+					v.Group, v.Error = "", "access revoked"
+					out.Agents[i] = v
+					return
+				}
+			}
 			st, err := s.client(a).status(ctx)
 			if err != nil {
 				v.Error = err.Error()
@@ -356,21 +412,102 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if err := req.normalize(); err != nil {
+	if !old.Connected() {
+		if err := req.normalize(); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	groups := s.store.Groups()
+	rec, err := s.store.UpdateAgent(old.Name, func(a *AgentRecord) error {
+		a.Group = req.Group // for connected agents "" means "by labels"
+		if !a.Connected() {
+			a.URL, a.InsecureSkipVerify = req.URL, req.InsecureSkipVerify
+			if req.Token != "" { // empty keeps the stored token
+				a.Token = req.Token
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	rec := AgentRecord{Name: old.Name, URL: req.URL, Token: req.Token, Group: req.Group, InsecureSkipVerify: req.InsecureSkipVerify}
-	if err := s.store.UpdateAgent(rec); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	rec, _ = s.store.Agent(old.Name)
 	var push *PushResult
-	if rec.Group != "" && (rec.Group != old.Group || rec.URL != old.URL) {
+	if g := EffectiveGroup(rec, groups); g != "" && (g != EffectiveGroup(old, groups) || rec.URL != old.URL) {
 		push = s.pushToNewMember(r.Context(), rec)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "push": push})
+}
+
+// handleSetRevoked blocks (or re-allows) a connected agent. A revoked agent's
+// polls are refused, so it gets no rules or requests until allowed again.
+func (s *Server) handleSetRevoked(revoked bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rec, err := s.store.UpdateAgent(r.PathValue("name"), func(a *AgentRecord) error {
+			if !a.Connected() {
+				return errors.New("only agents that connect to the dashboard can be revoked; remove direct agents instead")
+			}
+			a.Revoked = revoked
+			return nil
+		})
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		s.log.Info("agent access changed", "agent", rec.Name, "revoked", revoked)
+		if revoked {
+			s.wakeTunnel(rec.ID)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "revoked": revoked})
+	}
+}
+
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	type tokenView struct {
+		EnrollmentToken
+		Hash    string `json:"hash,omitempty"` // never sent
+		Expired bool   `json:"expired"`
+	}
+	out := []tokenView{}
+	for _, t := range s.store.Tokens() {
+		out = append(out, tokenView{EnrollmentToken: t, Expired: !t.ExpiresAt.IsZero() && time.Now().After(t.ExpiresAt)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": out, "config_token": s.cfg.EnrollmentToken != ""})
+}
+
+func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+		TTL  string `json:"ttl"` // e.g. "24h"; empty = never expires
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	var ttl time.Duration
+	if req.TTL != "" {
+		d, err := time.ParseDuration(req.TTL)
+		if err != nil || d <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("invalid expiry"))
+			return
+		}
+		ttl = d
+	}
+	t, raw, err := s.store.CreateToken(strings.TrimSpace(req.Name), ttl)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("enrollment token created", "name", t.Name, "expires", t.ExpiresAt)
+	writeJSON(w, http.StatusOK, map[string]any{"id": t.ID, "name": t.Name, "token": raw, "expires_at": t.ExpiresAt})
+}
+
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.RevokeToken(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"revoked": r.PathValue("id")})
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
@@ -427,10 +564,11 @@ func (s *Server) proxy(method, path string) http.HandlerFunc {
 // ---- groups ----
 
 type groupRequest struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Source      string     `json:"source"`
-	Git         *GitSource `json:"git"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Source      string            `json:"source"`
+	Git         *GitSource        `json:"git"`
+	Selector    map[string]string `json:"selector"`
 	// Rules optionally seeds a manual group's rule set on creation.
 	Rules string `json:"rules"`
 }
@@ -440,7 +578,7 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git}
+	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector}
 	if req.Rules != "" && req.Source == "manual" {
 		if _, err := validateForDashboard([]byte(req.Rules)); err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
@@ -454,10 +592,10 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("group created", "group", g.Name, "source", g.Source)
 	resp := map[string]any{"name": g.Name}
-	if g.Source == "git" {
-		if err := s.syncGroup(r.Context(), g.Name, "created", true); err != nil {
-			resp["sync_error"] = err.Error()
-		}
+	// Fetch from git if needed, and push to members (including agents its
+	// label selector just picked up).
+	if err := s.syncGroup(r.Context(), g.Name, "created", g.Source == "git"); err != nil {
+		resp["sync_error"] = err.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -468,16 +606,14 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git}
+	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector}
 	if err := s.store.UpdateGroup(g); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	resp := map[string]any{"name": name}
-	if g.Source == "git" {
-		if err := s.syncGroup(r.Context(), name, "settings changed", true); err != nil {
-			resp["sync_error"] = err.Error()
-		}
+	if err := s.syncGroup(r.Context(), name, "settings changed", g.Source == "git"); err != nil {
+		resp["sync_error"] = err.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -591,4 +727,10 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// Shutdown releases held agent polls so an HTTP server shutdown does not wait
+// for them. Agents simply reconnect to the next dashboard instance.
+func (s *Server) Shutdown() {
+	s.stoppingOnce.Do(func() { close(s.stopping) })
 }

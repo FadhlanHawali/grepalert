@@ -23,6 +23,10 @@ type Config struct {
 	// ReconcileInterval is how often group members are checked and re-pushed
 	// the group's rules if they drifted or came back online (default 30s).
 	ReconcileInterval rules.Duration `yaml:"reconcile_interval"`
+	// EnrollmentToken is an optional fixed token agents can enroll with, for
+	// automated setups (Ansible, Terraform, images). Tokens can also be
+	// created and revoked in the UI.
+	EnrollmentToken string `yaml:"enrollment_token"`
 }
 
 // Auth enables HTTP basic auth on the dashboard when a password is set.

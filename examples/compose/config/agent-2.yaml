@@ -1,5 +1,5 @@
-# agent-2 is seeded with its own rules (config/agent-2-rules.yaml) on first
-# start. Leave it ungrouped to edit its rules on its own, or add it to a group.
+# agent-2 is a "direct" agent: the dashboard connects to it (Connect agent →
+# http://agent-2:9300). Its rules are seeded from config/agent-2-rules.yaml.
 name: edge-proxy-1
 listen: ":9300"
 token: ${GREPALERT_AGENT_TOKEN}

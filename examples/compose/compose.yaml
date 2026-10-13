@@ -12,6 +12,7 @@ x-agent: &agent
   restart: unless-stopped
   environment:
     GREPALERT_AGENT_TOKEN: ${GREPALERT_AGENT_TOKEN}
+    GREPALERT_ENROLL_TOKEN: ${GREPALERT_ENROLL_TOKEN}
     WEBHOOK_URL: http://webhook-sink:9599/hook   # secrets/URLs stay out of the rules repo
   mem_limit: 64m                                 # hard cap; the agent's soft limit is 32MiB
   depends_on: [loggen, webhook-sink]
@@ -50,6 +51,7 @@ services:
     environment:
       GREPALERT_AGENT_TOKEN: ${GREPALERT_AGENT_TOKEN}
       GREPALERT_DASHBOARD_PASSWORD: ${GREPALERT_DASHBOARD_PASSWORD}
+      GREPALERT_ENROLL_TOKEN: ${GREPALERT_ENROLL_TOKEN}
     volumes:
       - ./config/dashboard.yaml:/etc/grepalert/dashboard.yaml:ro
       - dashboard-data:/var/lib/grepalert-dashboard

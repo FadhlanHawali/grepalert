@@ -47,36 +47,42 @@ func main() {
 		log.Error("load config", "err", err)
 		os.Exit(1)
 	}
-	if cfg.Token == "" {
-		log.Warn("no token configured: the agent API is unauthenticated")
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	a := agent.New(cfg, log)
-	srv := a.Server()
-	go func() {
-		cfg := a.Config()
-		log.Info("agent API listening", "addr", cfg.Listen, "name", cfg.Name, "version", agent.Version)
-		var err error
-		if cfg.TLSCert != "" {
-			err = srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
-		} else {
-			err = srv.ListenAndServe()
+	cfg = a.Config() // with defaults applied
+	log.Info("starting", "name", cfg.Name, "version", agent.Version, "dashboard", cfg.Dashboard.URL, "listen", cfg.Listen)
+
+	var srv *http.Server
+	if cfg.Listen != "off" {
+		if cfg.Token == "" {
+			log.Warn("no token configured: the agent API is unauthenticated")
 		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("API server", "err", err)
-			stop()
-		}
-	}()
+		srv = a.Server()
+		go func() {
+			var err error
+			if cfg.TLSCert != "" {
+				err = srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+			} else {
+				err = srv.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("API server", "err", err)
+				stop()
+			}
+		}()
+	}
 
 	if err := a.Run(ctx); err != nil {
 		log.Error("agent", "err", err)
 		os.Exit(1)
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Shutdown(shutdownCtx)
+	if srv != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}
 	log.Info("stopped")
 }

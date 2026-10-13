@@ -210,12 +210,14 @@ func (s *Server) ensureRules(ctx context.Context, a AgentRecord, raw []byte, has
 	return res
 }
 
-// pushToNewMember applies a group's rules to an agent that just joined it.
+// pushToNewMember applies the rules of the agent's (effective) group to it,
+// e.g. right after it joined.
 func (s *Server) pushToNewMember(ctx context.Context, a AgentRecord) *PushResult {
-	if a.Group == "" {
+	name := EffectiveGroup(a, s.store.Groups())
+	if name == "" || a.Revoked {
 		return nil
 	}
-	g, ok := s.store.Group(a.Group)
+	g, ok := s.store.Group(name)
 	if !ok || g.RulesHash == "" {
 		return nil
 	}

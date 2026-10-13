@@ -30,9 +30,11 @@ type Agent struct {
 	host    string
 	started time.Time
 
-	events *ring
-	eng    *engine
-	notif  *notifier
+	events  *ring
+	eng     *engine
+	notif   *notifier
+	conn    *connector // nil unless dashboard.url is set
+	connErr error
 
 	mu            sync.Mutex // guards everything below
 	rules         *rules.Compiled
@@ -41,14 +43,13 @@ type Agent struct {
 	tailers       map[string]*tailerHandle
 	resume        map[string]Position // saved positions not yet handed to a tailer
 	stopped       bool
-	wg            sync.WaitGroup
+	sched         *scheduler // polls all tailers on a fixed worker pool
 
 	lastState []byte // last state written, to skip identical writes
 }
 
 type tailerHandle struct {
-	t      *tailer
-	cancel context.CancelFunc
+	t *tailer
 }
 
 func New(cfg Config, log *slog.Logger) *Agent {
@@ -68,6 +69,10 @@ func New(cfg Config, log *slog.Logger) *Agent {
 	}
 	a.notif = newNotifier(cfg.QueueSize, cfg.Retries, a.events)
 	a.eng = newEngine(cfg.Name, host, a.events, a.notif.enqueue)
+	a.sched = newScheduler(cfg.ReadWorkers, cfg.PollInterval.D(), cfg.IdlePollInterval.D())
+	if cfg.Dashboard.URL != "" {
+		a.conn, a.connErr = newConnector(a)
+	}
 	return a
 }
 
@@ -95,8 +100,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
+	if a.connErr != nil {
+		return a.connErr
+	}
 	if err := a.loadRulesFile(true); err != nil {
 		return err
+	}
+	if a.conn != nil {
+		go a.conn.run(ctx)
 	}
 
 	tick := time.NewTicker(a.cfg.RescanInterval.D())
@@ -116,11 +127,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.stopped = true
 			handles := make([]*tailerHandle, 0, len(a.tailers))
 			for _, h := range a.tailers {
-				h.cancel()
 				handles = append(handles, h)
 			}
 			a.mu.Unlock()
-			a.wg.Wait()
+			a.sched.stop() // final read of every file, then close
 			stopNotif()
 			a.notif.wait()
 			// Save after the tailers stopped, so the final positions are exact.
@@ -218,7 +228,7 @@ func (a *Agent) reconcile(discovered bool) {
 	}
 	for p, h := range a.tailers {
 		if _, ok := byFile[p]; !ok {
-			h.cancel()
+			a.sched.remove(h.t)
 			delete(a.tailers, p)
 		}
 	}
@@ -236,13 +246,8 @@ func (a *Agent) reconcile(discovered bool) {
 		}
 		t := newTailer(p, a.cfg.PollInterval.D(), a.cfg.MaxLineBytes, fromStart || discovered, resume,
 			a.eng.process, a.tailError, a.log.With("file", p))
-		ctx, cancel := context.WithCancel(context.Background()) // cancelled via the handle
-		a.tailers[p] = &tailerHandle{t: t, cancel: cancel}
-		a.wg.Add(1)
-		go func() {
-			defer a.wg.Done()
-			t.run(ctx)
-		}()
+		a.tailers[p] = &tailerHandle{t: t}
+		a.sched.add(t)
 	}
 	a.eng.setSnapshot(&snapshot{rules: a.rules, byFile: byFile})
 }
@@ -298,8 +303,9 @@ type Status struct {
 		Dropped uint64 `json:"dropped"`
 		Queued  int    `json:"queued"`
 	} `json:"webhooks"`
-	SuppressKeys int         `json:"suppress_keys"`
-	Memory       MemoryStats `json:"memory"`
+	SuppressKeys int              `json:"suppress_keys"`
+	Dashboard    *DashboardStatus `json:"dashboard,omitempty"`
+	Memory       MemoryStats      `json:"memory"`
 }
 
 type RuleStatus struct {
@@ -326,6 +332,11 @@ type MemoryStats struct {
 	NumGC       uint32 `json:"num_gc"`
 	Goroutines  int    `json:"goroutines"`
 	MemoryLimit int64  `json:"memory_limit"`
+	// Breakdown of what counts against the memory limit.
+	StackInuse   uint64  `json:"stack_inuse"`
+	HeapIdle     uint64  `json:"heap_idle"`
+	HeapReleased uint64  `json:"heap_released"`
+	GCCPU        float64 `json:"gc_cpu_fraction"`
 }
 
 func (a *Agent) Status() Status {
@@ -365,16 +376,24 @@ func (a *Agent) Status() Status {
 	s.Webhooks.Dropped = a.notif.dropped.Load()
 	s.Webhooks.Queued = len(a.notif.queue)
 	s.SuppressKeys = a.eng.suppressKeys()
+	if a.conn != nil {
+		ds := a.conn.status()
+		s.Dashboard = &ds
+	}
 
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	s.Memory = MemoryStats{
-		HeapAlloc:   ms.HeapAlloc,
-		HeapInuse:   ms.HeapInuse,
-		Sys:         ms.Sys,
-		NumGC:       ms.NumGC,
-		Goroutines:  runtime.NumGoroutine(),
-		MemoryLimit: debug.SetMemoryLimit(-1),
+		HeapAlloc:    ms.HeapAlloc,
+		HeapInuse:    ms.HeapInuse,
+		Sys:          ms.Sys,
+		NumGC:        ms.NumGC,
+		Goroutines:   runtime.NumGoroutine(),
+		MemoryLimit:  debug.SetMemoryLimit(-1),
+		StackInuse:   ms.StackInuse,
+		HeapIdle:     ms.HeapIdle,
+		HeapReleased: ms.HeapReleased,
+		GCCPU:        ms.GCCPUFraction,
 	}
 	return s
 }

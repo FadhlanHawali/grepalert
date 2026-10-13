@@ -19,11 +19,18 @@ import (
 // without touching agent settings.
 type Config struct {
 	Name      string `yaml:"name"`
-	Listen    string `yaml:"listen"`
+	Listen    string `yaml:"listen"` // "off" disables the inbound API
 	Token     string `yaml:"token"`
 	TLSCert   string `yaml:"tls_cert"`
 	TLSKey    string `yaml:"tls_key"`
 	RulesFile string `yaml:"rules_file"`
+
+	// Dashboard makes the agent connect out to a dashboard (enroll + long-poll)
+	// instead of, or as well as, serving its API on Listen. Labels describe
+	// this agent; dashboard groups can auto-add agents by label.
+	Dashboard    DashboardConfig   `yaml:"dashboard"`
+	Labels       map[string]string `yaml:"labels"`
+	IdentityFile string            `yaml:"identity_file"`
 
 	// StateFile stores read positions so a restart resumes where the agent
 	// stopped. Defaults to grepalert.state.json next to RulesFile; "off"
@@ -33,8 +40,14 @@ type Config struct {
 
 	// StartFrom is where to begin reading files that exist at startup:
 	// "end" (default, only new lines) or "beginning".
-	StartFrom      string         `yaml:"start_from"`
-	PollInterval   rules.Duration `yaml:"poll_interval"`
+	StartFrom    string         `yaml:"start_from"`
+	PollInterval rules.Duration `yaml:"poll_interval"`
+	// IdlePollInterval is how far polling backs off for files with no new
+	// data (they return to PollInterval as soon as data arrives).
+	IdlePollInterval rules.Duration `yaml:"idle_poll_interval"`
+	// ReadWorkers is how many files are read in parallel; it also caps how
+	// many CPU cores the agent uses while catching up on a backlog.
+	ReadWorkers    int            `yaml:"read_workers"`
 	RescanInterval rules.Duration `yaml:"rescan_interval"`
 	MaxLineBytes   int            `yaml:"max_line_bytes"`
 
@@ -49,11 +62,17 @@ type Config struct {
 }
 
 func (c *Config) setDefaults() {
+	if c.Listen == "" && c.Dashboard.URL != "" {
+		c.Listen = "off" // connected agents need no inbound port
+	}
 	if c.Listen == "" {
 		c.Listen = ":9300"
 	}
 	if c.RulesFile == "" {
 		c.RulesFile = "rules.yaml"
+	}
+	if c.IdentityFile == "" {
+		c.IdentityFile = filepath.Join(filepath.Dir(c.RulesFile), "grepalert.identity.json")
 	}
 	if c.StateFile == "" {
 		c.StateFile = filepath.Join(filepath.Dir(c.RulesFile), "grepalert.state.json")
@@ -66,6 +85,15 @@ func (c *Config) setDefaults() {
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = rules.Duration(500 * time.Millisecond)
+	}
+	if c.IdlePollInterval <= 0 {
+		c.IdlePollInterval = rules.Duration(2 * time.Second)
+	}
+	if c.IdlePollInterval < c.PollInterval {
+		c.IdlePollInterval = c.PollInterval
+	}
+	if c.ReadWorkers <= 0 {
+		c.ReadWorkers = 4
 	}
 	if c.RescanInterval <= 0 {
 		c.RescanInterval = rules.Duration(10 * time.Second)

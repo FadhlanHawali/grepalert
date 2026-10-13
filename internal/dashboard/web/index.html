@@ -128,6 +128,7 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: 
 <dialog id="dlg-agent">
   <form method="dialog" id="f-agent" autocomplete="off">
     <h2 id="fa-title">Connect agent</h2>
+    <div class="msg info" id="fa-enroll-hint" style="margin:0">Servers behind NAT or a firewall? Agents can connect to the dashboard themselves, with no inbound port. <button type="button" class="link" data-action="goto-enroll">Create an enrollment token</button></div>
     <label class="field"><span>Agent URL</span>
       <input type="text" name="url" placeholder="http://10.0.0.5:9300" required>
       <small>Where the agent's API listens (its <code>listen</code> setting).</small></label>
@@ -161,6 +162,9 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: 
       <label class="field"><span>Name</span><input type="text" name="name" placeholder="web-servers" required></label>
       <label class="field"><span>Description</span><input type="text" name="description" placeholder="optional"></label>
     </div>
+    <label class="field"><span>Auto-add agents with labels</span>
+      <input type="text" name="selector" placeholder="role=web, env=prod">
+      <small>Enrolled agents that have all of these labels join this group by themselves. Leave empty to add agents by hand.</small></label>
     <div class="field"><span>Rules come from</span>
       <div class="seg">
         <label><input type="radio" name="source" value="manual" checked><b>This dashboard</b><small>Edit the rules here and push them to the group.</small></label>
@@ -268,15 +272,48 @@ function parseHash() {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('group/')) return { kind: 'group', name: h.slice(6) };
   if (h === 'ungrouped') return { kind: 'ungrouped' };
+  if (h === 'enroll') return { kind: 'enroll' };
   return { kind: 'all' };
 }
 function go(v) {
   view = v; selAgent = null; editorDirty = false; groupTab = 'agents';
+  if (v.kind !== 'enroll') newToken = null;
   history.replaceState(null, '', '#' + (v.kind === 'group' ? 'group/' + enc(v.name) : v.kind));
   render();
 }
 const groupOf = n => data.groups.find(g => g.name === n);
 const agentOf = n => data.agents.find(a => a.name === n);
+
+// Labels as "k=v, k2=v2" text and back.
+const labelsText = l => Object.entries(l || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+function parseLabels(s) {
+  const out = {};
+  for (const part of s.split(',').map(x => x.trim()).filter(Boolean)) {
+    const i = part.indexOf('=');
+    if (i <= 0) throw new Error(`"${part}" is not key=value`);
+    out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+const labelChips = l => Object.entries(l || {}).filter(([k]) => k !== 'os')
+  .map(([k, v]) => `<span class="badge">${esc(k)}=${esc(v)}</span>`).join(' ');
+
+// The name cell of an agent row: status dot, name, how it is connected.
+function agentNameCell(a) {
+  const dot = a.revoked ? '' : a.online ? 'ok' : 'bad';
+  const how = a.mode === 'connected'
+    ? `<span title="Connects out to the dashboard: no inbound port">⇡ ${esc(a.hostname || 'enrolled agent')}</span>`
+    : esc(a.url);
+  const auto = a.mode === 'connected' && a.group && !a.assigned ? ' <span class="badge" title="Joined by label">auto</span>' : '';
+  return `<span class="dot ${dot}"></span> ${esc(a.name)}${auto}<div class="muted mono">${how}</div>
+    ${a.labels ? `<div style="margin-top:3px">${labelChips(a.labels)}</div>` : ''}`;
+}
+
+function offlineText(a) {
+  if (a.revoked) return '<span class="badge bad">revoked</span> <span class="muted">The dashboard refuses this agent until you allow it again (Settings).</span>';
+  if (a.mode === 'connected') return `<span class="badge bad">offline</span> <span class="muted">${zero(a.last_seen) ? 'has not connected since the dashboard started' : 'last seen ' + ago(a.last_seen)}</span>`;
+  return `<span class="badge bad">offline</span> <span class="muted">${esc(a.error)}</span>`;
+}
 
 // Rule state of an agent relative to its group.
 function syncState(a) {
@@ -316,17 +353,21 @@ function renderNav() {
     <div class="label">Groups</div>
     ${data.groups.map(g => `<a class="${on('group', g.name)}" data-nav="group" data-name="${esc(g.name)}">
       <span class="dot ${groupHealth(g)}"></span>${esc(g.name)}<span class="count">${g.members.length}</span></a>`).join('')}
-    <a class="new" data-action="new-group">+ New group</a>`;
+    <a class="new" data-action="new-group">+ New group</a>
+    <div class="label">Setup</div>
+    <a class="${on('enroll')}" data-nav="enroll">Agent enrollment</a>`;
 }
 
 function renderMain() {
   const main = $('#main');
+  if (view.kind === 'enroll') { renderEnroll(); return; }
   if (!data.agents.length && !data.groups.length) {
     main.innerHTML = `<div class="card"><div class="empty"><h3>No agents connected yet</h3>
-      <p>Start <code>grepalert-agent</code> on a server, then connect the dashboard to it.<br>
-      Create a group to share one set of rules across several agents.</p>
+      <p>Let agents connect to the dashboard themselves with an <b>enrollment token</b> (no inbound port needed),<br>
+      or connect the dashboard to an agent's address. Create a group to share one set of rules across agents.</p>
       <div class="row" style="justify-content:center"><button data-action="new-group">New group</button>
-      <button class="primary" data-action="connect">Connect agent</button></div></div></div>`;
+      <button data-action="connect">Connect by address</button>
+      <button class="primary" data-nav="enroll">Enroll agents</button></div></div></div>`;
     return;
   }
   let html = '';
@@ -357,13 +398,13 @@ function agentTable(list, showGroup, groupCtx) {
     ${list.map(a => {
       const sel = selAgent === a.name ? 'sel' : '';
       const group = showGroup ? `<td>${a.group ? `<a class="badge" data-nav="group" data-name="${esc(a.group)}" style="cursor:pointer">${esc(a.group)}</a>` : '<span class="muted">—</span>'}</td>` : '';
-      if (!a.online) return `<tr class="click ${sel}" data-agent="${esc(a.name)}"><td><span class="dot bad"></span> ${esc(a.name)}<div class="muted mono">${esc(a.url)}</div></td>${group}
-        <td colspan="8" class="wrap"><span class="badge bad">offline</span> <span class="muted">${esc(a.error)}</span></td></tr>`;
+      if (!a.online) return `<tr class="click ${sel}" data-agent="${esc(a.name)}"><td>${agentNameCell(a)}</td>${group}
+        <td colspan="8" class="wrap">${offlineText(a)}</td></tr>`;
       const s = a.status, st = syncState(a);
       const rules = st ? `<span class="badge ${st.cls}" title="${esc(st.title || '')}">${esc(st.text)}</span>` : `<code>${esc(s.rules_hash)}</code> <span class="muted">${(s.rules || []).length} rules</span>`;
       const bad = s.webhooks.failed + s.webhooks.dropped;
       return `<tr class="click ${sel}" data-agent="${esc(a.name)}">
-        <td><span class="dot ok"></span> ${esc(a.name)}<div class="muted mono">${esc(a.url)}</div></td>${group}
+        <td>${agentNameCell(a)}</td>${group}
         <td>${rules}</td><td>${esc(s.host)}</td><td>${esc(s.version)}</td><td>${uptime(s.started_at)}</td>
         <td class="num">${(s.files || []).length}</td><td class="num">${s.webhooks.sent}</td>
         <td class="num">${bad ? `<span class="badge bad">${s.webhooks.failed} / ${s.webhooks.dropped}</span>` : '0 / 0'}</td>
@@ -389,6 +430,7 @@ function groupCard(g) {
         <button class="danger" data-action="delete-group">Delete</button></div></div>
     <div class="meta">
       <span>Rules: <b>${esc(sourceText(g))}</b></span>
+      <span>Members: <b>${g.selector ? 'agents labelled ' + esc(labelsText(g.selector)) + ', plus any added by hand' : 'added by hand'}</b></span>
       ${g.source === 'git' ? `<span>Sync: <b>${g.git.interval ? 'every ' + esc(g.git.interval) : 'manual'}</b></span>` : ''}
       <span>Version: <b class="mono">${g.rules_hash ? esc(g.rules_hash) : 'none yet'}</b>${g.rules_hash ? ' · updated ' + ago(g.rules_updated_at) : ''}</span>
       <span>Agents in sync: <b>${inSync}/${members.length}</b></span>
@@ -516,6 +558,7 @@ function tabTest(a) {
 }
 
 function tabSettings(a) {
+  if (a.mode === 'connected') return tabSettingsConnected(a);
   $('#atab').innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
       <div class="stat"><div class="k">URL</div><div class="mono">${esc(a.url)}</div></div>
       <div class="stat"><div class="k">Group</div><div>${a.group ? esc(a.group) : '<span class="muted">none</span>'}</div></div>
@@ -526,11 +569,96 @@ function tabSettings(a) {
     <p class="muted">Removing only disconnects the dashboard. The agent keeps running with its current rules.</p>`;
 }
 
+function tabSettingsConnected(a) {
+  const stat = (k, v) => `<div class="stat"><div class="k">${k}</div><div>${v}</div></div>`;
+  const byLabels = data.groups.find(g => g.selector && Object.entries(g.selector).every(([k, v]) => (a.labels || {})[k] === v));
+  $('#atab').innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+      ${stat('Connection', '⇡ connects out to the dashboard (no inbound port)')}
+      ${stat('Hostname', esc(a.hostname || '—'))}
+      ${stat('Last seen', a.online ? 'connected now' : zero(a.last_seen) ? 'not since the dashboard started' : ago(a.last_seen))}
+      ${stat('Enrolled', `${ago(a.added_at)} with token <b>${esc(a.enrolled_via || '—')}</b>`)}
+      ${stat('Labels', labelChips(a.labels) || '<span class="muted">none</span>')}</div>
+    <div class="field" style="max-width:420px"><span>Group</span>
+      <select id="a-group">
+        <option value="">Automatic by labels${byLabels ? ` (currently ${esc(byLabels.name)})` : ' (no group matches)'}</option>
+        ${data.groups.map(g => `<option value="${esc(g.name)}" ${a.assigned && a.group === g.name ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+      </select>
+      <small>Pick a group to override the labels. The group's rules replace the agent's rules.</small></div>
+    <div class="row"><button class="primary" data-action="save-agent-group">Save group</button>
+      <span class="spacer"></span>
+      ${a.revoked ? `<button data-action="allow-agent">Allow again</button>` : `<button class="danger" data-action="revoke-agent">Revoke access</button>`}
+      <button class="danger" data-action="remove-agent">Remove</button></div>
+    <p class="muted"><b>Revoke</b> blocks this agent: the dashboard refuses its connection and stops managing it, until you allow it again.
+      <b>Remove</b> deletes it from the list; if it still has a valid enrollment token it will enroll again.</p>`;
+}
+
+// ---------- enrollment ----------
+let newToken = null; // the token just created; shown once
+
+function renderEnroll() {
+  const origin = location.origin;
+  $('#main').innerHTML = `<div class="card">
+    <div class="card-head"><div><h2>Agent enrollment</h2>
+      <div class="sub">Agents enroll with a token, then keep an outbound connection to this dashboard. Your servers need no inbound port, and it works behind NAT and HTTP proxies.
+      Give agents <b>labels</b> and groups can add them automatically.</div></div></div>
+    <div class="pane" style="padding-top:0">
+      <div class="row" style="margin:0;align-items:flex-end">
+        <label class="field" style="flex:1;min-width:200px"><span>Token name</span><input type="text" id="tok-name" placeholder="prod-web-images"></label>
+        <label class="field" style="width:200px"><span>Expires</span><select id="tok-ttl">
+          <option value="">Never</option><option value="1h">In 1 hour</option><option value="24h" selected>In 1 day</option>
+          <option value="168h">In 7 days</option><option value="720h">In 30 days</option></select></label>
+        <button class="primary" data-action="create-token">Create token</button>
+      </div>
+      <div id="tok-new">${newToken ? newTokenBox(newToken, origin) : ''}</div>
+      <h3 class="sec">Tokens</h3>
+      <div id="tok-list" class="muted">Loading…</div>
+      <h3 class="sec">How an agent connects</h3>
+      <pre class="preview mono">${esc(agentSnippet(origin, '<enrollment token>'))}</pre>
+      <p class="muted">The token is only used once. On first contact the agent receives its own credential and saves it to <code>identity_file</code>.
+        Revoking a token stops new enrollments; agents that already enrolled keep working. To cut off an agent, revoke the agent itself.</p>
+    </div></div>`;
+  loadTokens();
+}
+
+function agentSnippet(origin, token) {
+  return `# /etc/grepalert/agent.yaml
+dashboard:
+  url: ${origin}
+  enrollment_token: ${token}
+labels:            # groups can auto-add agents by label
+  role: web
+  env: prod
+rules_file: /var/lib/grepalert/rules.yaml
+# name: web-01     # defaults to the hostname`;
+}
+
+function newTokenBox(t, origin) {
+  return `<div class="msg ok" style="font-family:inherit;white-space:normal">
+    <b>Token "${esc(t.name)}" created.</b> Copy it now: it will not be shown again.
+    <div class="row"><code style="user-select:all;word-break:break-all;flex:1">${esc(t.token)}</code>
+      <button data-action="copy" data-text="${esc(t.token)}">Copy token</button>
+      <button data-action="copy" data-text="${esc(agentSnippet(origin, t.token))}">Copy agent config</button></div></div>`;
+}
+
+async function loadTokens() {
+  try {
+    const { data: r } = await api('GET', '/api/tokens');
+    const status = t => t.revoked ? '<span class="badge bad">revoked</span>' : t.expired ? '<span class="badge warn">expired</span>' : '<span class="badge ok">active</span>';
+    const rows = r.tokens.slice().reverse().map(t => `<tr><td><b>${esc(t.name)}</b></td><td class="mono">${esc(t.prefix)}…</td>
+      <td>${ago(t.created_at)}</td><td>${zero(t.expires_at) ? 'never' : new Date(t.expires_at).toLocaleString()}</td>
+      <td class="num">${t.uses}</td><td>${zero(t.last_used) ? '—' : ago(t.last_used)}</td><td>${status(t)}</td>
+      <td>${t.revoked ? '' : `<button class="danger" data-action="revoke-token" data-id="${esc(t.id)}">Revoke</button>`}</td></tr>`).join('');
+    $('#tok-list').innerHTML = (r.config_token ? `<div class="msg info" style="margin:0 0 10px">A fixed token is also set in the dashboard config (<code>enrollment_token</code>), for automation. Agents enrolled with it show "config".</div>` : '') +
+      (rows ? `<div class="scroll"><table><thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Expires</th><th class="num">Agents enrolled</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<div class="empty" style="padding:16px">No tokens yet.</div>');
+  } catch (e) { $('#tok-list').innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
 // ---------- refresh ----------
 async function refresh() {
   try { data = (await api('GET', '/api/overview')).data; }
   catch (e) { $('#summary').textContent = 'dashboard error: ' + e.message; return; }
-  if (document.querySelector('dialog[open]')) { renderNav(); return; }
+  if (document.querySelector('dialog[open]') || view.kind === 'enroll') { renderNav(); return; }
   // Keep focus/scroll and unsaved edits stable: re-render only if not editing.
   const editing = editorDirty || document.activeElement?.matches('textarea, input');
   if (editing) { renderNav(); return; }
@@ -548,6 +676,7 @@ function openAgentDialog(agent, group) {
   const f = $('#f-agent'); f.reset();
   f.group.innerHTML = groupOptions(agent ? agent.group : group);
   $('#fa-msg').innerHTML = '';
+  $('#fa-enroll-hint').hidden = !!agent;
   $('#fa-title').textContent = agent ? 'Edit agent ' + agent.name : 'Connect agent';
   $('#fa-save').textContent = agent ? 'Save' : 'Connect';
   f.name.disabled = !!agent;
@@ -616,7 +745,7 @@ function openGroupDialog(group) {
   f.seed.innerHTML = `<option value="example">An example rule set</option><option value="empty">Nothing (empty)</option>` +
     online.map(a => `<option value="agent:${esc(a.name)}">A copy of ${esc(a.name)}'s current rules</option>`).join('');
   if (group) {
-    f.name.value = group.name; f.description.value = group.description || '';
+    f.name.value = group.name; f.description.value = group.description || ''; f.selector.value = labelsText(group.selector);
     f.source.value = group.source;
     if (group.git) {
       f.provider.value = group.git.provider; f.repo.value = group.git.repo || ''; f.ref.value = group.git.ref || '';
@@ -640,6 +769,8 @@ function groupFormVisibility() {
 async function saveGroup() {
   const f = $('#f-group'), msg = $('#fg-msg');
   const body = { name: f.name.value.trim(), description: f.description.value.trim(), source: f.source.value };
+  try { body.selector = parseLabels(f.selector.value); }
+  catch (e) { msg.innerHTML = `<div class="msg bad">Labels: ${esc(e.message)}</div>`; f.selector.focus(); return; }
   if (!body.name) { f.name.focus(); return; }
   if (body.source === 'git') {
     const url = f.provider.value === 'url';
@@ -675,7 +806,7 @@ function addExisting(group) {
   dlg.innerHTML = `<form method="dialog"><h2>Add agents to ${esc(group)}</h2>
     <p class="muted" style="margin:0">The group's rules replace each agent's current rules.</p>
     <div style="display:grid;gap:6px;max-height:300px;overflow:auto">${candidates.map(a => `<label class="check"><input type="checkbox" value="${esc(a.name)}">
-      <b>${esc(a.name)}</b> <span class="muted">${a.group ? 'in ' + esc(a.group) : 'ungrouped'} · ${esc(a.url)}</span></label>`).join('')}</div>
+      <b>${esc(a.name)}</b> <span class="muted">${a.group ? 'in ' + esc(a.group) : 'ungrouped'} · ${esc(a.url || a.hostname || '')}</span></label>`).join('')}</div>
     <div class="foot"><button value="cancel">Cancel</button><button class="primary" value="ok">Add to group</button></div></form>`;
   document.body.append(dlg); dlg.showModal();
   dlg.addEventListener('close', async () => {
@@ -716,6 +847,41 @@ document.addEventListener('click', async e => {
     case 'add-existing': return addExisting(t.dataset.group);
     case 'close-agent': selAgent = null; return render();
     case 'edit-agent': return openAgentDialog(a);
+    case 'goto-enroll': $('#dlg-agent').close(); return go({ kind: 'enroll' });
+    case 'create-token': {
+      const name = $('#tok-name').value.trim();
+      if (!name) { $('#tok-name').focus(); return; }
+      try {
+        const { data: r } = await api('POST', '/api/tokens', { name, ttl: $('#tok-ttl').value });
+        newToken = r; renderEnroll();
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
+    case 'revoke-token':
+      if (!confirm('Revoke this token? New agents can no longer enroll with it. Agents that already enrolled keep working.')) return;
+      try { await api('DELETE', `/api/tokens/${enc(t.dataset.id)}`); toast('Token revoked'); loadTokens(); }
+      catch (err) { toast(err.message, true); } return;
+    case 'copy':
+      try { await navigator.clipboard.writeText(t.dataset.text); toast('Copied'); }
+      catch { toast('Copy failed: select the text and copy it manually', true); } return;
+    case 'save-agent-group': {
+      const group = $('#a-group').value, target = group || null;
+      if (target && target !== a.group && groupOf(target)?.rules_hash &&
+          !confirm(`Group "${target}" will replace this agent's current rules with the group's rules. Continue?`)) return;
+      try {
+        const { data: r } = await api('PUT', `/api/agents/${enc(a.name)}`, { group });
+        toast(`Saved ${a.name}` + (r.push ? (r.push.ok ? ` · group rules ${r.push.action}` : ` · push failed: ${r.push.error}`) : ''), r.push && !r.push.ok);
+        await refresh(); agentTab = 'settings'; render();
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
+    case 'revoke-agent':
+      if (!confirm(`Revoke ${a.name}? The dashboard will refuse its connection and stop managing it. The agent keeps running with its current rules.`)) return;
+      try { await api('POST', `/api/agents/${enc(a.name)}/revoke`); toast(`Revoked ${a.name}`); await refresh(); agentTab = 'settings'; render(); }
+      catch (err) { toast(err.message, true); } return;
+    case 'allow-agent':
+      try { await api('POST', `/api/agents/${enc(a.name)}/allow`); toast(`${a.name} allowed again; it reconnects within 15 seconds`); await refresh(); agentTab = 'settings'; render(); }
+      catch (err) { toast(err.message, true); } return;
     case 'remove-agent':
       if (!confirm(`Remove ${a.name} from the dashboard? The agent keeps running with its current rules.`)) return;
       try { await api('DELETE', `/api/agents/${enc(a.name)}`); toast(`Removed ${a.name}`); selAgent = null; refresh(); }

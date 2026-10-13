@@ -1,5 +1,15 @@
 # grepalert agent settings. ${VAR} is expanded from the environment.
 name: web-01                    # defaults to the hostname
+# Either connect OUT to a dashboard (recommended; no inbound port needed):
+# dashboard:
+#   url: https://grepalert.example.com
+#   enrollment_token: ${GREPALERT_ENROLL_TOKEN}   # used once, at first start
+#   # ca_file: /etc/grepalert/ca.pem             # private CA for the dashboard
+# labels:                                         # dashboard groups can auto-add by label
+#   role: web
+#   env: prod
+
+# ...or let the dashboard connect IN to this API ("off" disables it):
 listen: ":9300"
 token: ${GREPALERT_AGENT_TOKEN} # the dashboard sends this as a Bearer token
 # tls_cert: /etc/grepalert/agent.crt
@@ -15,7 +25,9 @@ rules_file: rules.yaml
 state_interval: 5s       # how often positions are saved (also saved on shutdown)
 
 start_from: end          # end | beginning — for files with no saved position
-poll_interval: 500ms     # how often files are checked for new data
+poll_interval: 500ms     # how often busy files are checked for new data
+idle_poll_interval: 2s   # idle files back off to this (saves CPU with many files)
+read_workers: 4          # files read in parallel; also caps CPU cores used to catch up
 rescan_interval: 10s     # glob re-scan + rules file change check
 max_line_bytes: 16384    # longer lines are truncated, never buffered whole
 

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -39,8 +39,13 @@ const fpSize = 1024
 // tailer follows a single file by polling. Polling (instead of inotify) keeps
 // it portable and makes rotation/truncation handling explicit and predictable.
 //
-// Memory is fixed per file: one read buffer plus one line buffer capped at
-// maxLine bytes. Longer lines are truncated, never buffered whole.
+// Memory per file is small and fixed: a line buffer capped at maxLine bytes
+// (longer lines are truncated, never buffered whole). The 32 KB read buffer is
+// borrowed from a shared pool only while reading, so idle files cost ~1 KB
+// plus their goroutine, even with hundreds of files.
+//
+// A tailer has no goroutine of its own: the scheduler runs step() on a shared
+// worker pool, backing off for idle files.
 type tailer struct {
 	path      string
 	poll      time.Duration
@@ -58,9 +63,9 @@ type tailer struct {
 	offset   atomic.Int64
 	lines    atomic.Uint64
 	lastErr  atomic.Pointer[string]
-	readBuf  []byte
 	lineBuf  []byte
 	overflow bool // current line exceeded maxLine; drop until newline
+	more     bool // the last read stopped at readBudget with data left
 
 	// committed is the offset just past the last complete line. Unlike
 	// offset it excludes a partially written trailing line, so resuming from
@@ -84,22 +89,7 @@ func newTailer(path string, poll time.Duration, maxLine int, fromStart bool, res
 		onLine:    onLine,
 		onError:   onError,
 		log:       log,
-		readBuf:   make([]byte, 32*1024),
 		lineBuf:   make([]byte, 0, 1024),
-	}
-}
-
-func (t *tailer) run(ctx context.Context) {
-	defer t.close()
-	ticker := time.NewTicker(t.poll)
-	defer ticker.Stop()
-	for {
-		t.step()
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
 	}
 }
 
@@ -114,13 +104,24 @@ func (t *tailer) position() *Position {
 	return t.saved
 }
 
-func (t *tailer) step() {
+// step reads whatever is new and reports whether anything changed (new
+// data, rotation or truncation).
+func (t *tailer) step() bool {
+	before, f0 := t.offset.Load(), t.f
+	t.advance()
+	return t.offset.Load() != before || t.f != f0
+}
+
+func (t *tailer) advance() {
 	if t.f == nil {
 		if !t.open() {
 			return
 		}
 	}
 	t.drain()
+	if t.more {
+		return // backlog: yield to other files, continue next turn
+	}
 
 	// At EOF: detect rotation (path now points to a different file) and
 	// truncation (file shrank below our offset).
@@ -135,7 +136,10 @@ func (t *tailer) step() {
 		return
 	}
 	if !os.SameFile(cur, t.fi) {
-		t.drain() // pick up anything written to the old file just before rotation
+		for t.drain(); t.more; t.drain() {
+			// read the old file to its end before switching: nothing written
+			// to it just before rotation may be lost
+		}
 		t.close()
 		t.fromStart = true // a freshly rotated file must be read from the top
 		if t.open() {
@@ -326,13 +330,28 @@ func (t *tailer) drain() {
 	t.publish()
 }
 
+var readBufPool = sync.Pool{New: func() any { b := make([]byte, 32*1024); return &b }}
+
+// readBudget caps how much one step reads from the tailed file, so a large
+// backlog is processed in turns and other files keep getting polled.
+const readBudget = 4 << 20
+
 func (t *tailer) readAll(f *os.File) {
+	bp := readBufPool.Get().(*[]byte)
+	defer readBufPool.Put(bp)
+	buf := *bp
+	t.more = false
+	total := 0
 	for {
-		n, err := f.Read(t.readBuf)
+		n, err := f.Read(buf)
 		if n > 0 && f == t.f {
-			t.consume(t.readBuf[:n], t.offset.Add(int64(n))-int64(n))
+			t.consume(buf[:n], t.offset.Add(int64(n))-int64(n))
+			if total += n; total >= readBudget && err == nil {
+				t.more = true
+				return
+			}
 		} else if n > 0 {
-			t.consume(t.readBuf[:n], -1)
+			t.consume(buf[:n], -1)
 		}
 		if err != nil || n == 0 {
 			if err != nil && !errors.Is(err, io.EOF) {

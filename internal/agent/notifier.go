@@ -55,7 +55,17 @@ func newNotifier(queueSize, retries int, events *ring) *notifier {
 	}
 }
 
+// shutdownGrace is how long deliveries may continue after stop is requested.
+const shutdownGrace = 5 * time.Second
+
 func (n *notifier) start(ctx context.Context, workers int) {
+	// Deliveries use their own context: stopping must not cut off a webhook
+	// request already in flight. It ends shutdownGrace after ctx is done.
+	dctx, dcancel := context.WithCancel(context.Background())
+	go func() {
+		<-ctx.Done()
+		time.AfterFunc(shutdownGrace, dcancel)
+	}()
 	for i := 0; i < workers; i++ {
 		n.wg.Add(1)
 		go func() {
@@ -63,10 +73,10 @@ func (n *notifier) start(ctx context.Context, workers int) {
 			for {
 				select {
 				case <-ctx.Done():
-					n.flush()
+					n.flush(dctx)
 					return
 				case j := <-n.queue:
-					n.deliver(ctx, j)
+					n.deliver(dctx, j)
 				}
 			}
 		}()
@@ -75,11 +85,9 @@ func (n *notifier) start(ctx context.Context, workers int) {
 
 func (n *notifier) wait() { n.wg.Wait() }
 
-// flush delivers what is still queued at shutdown, bounded to a few seconds so
+// flush delivers what is still queued at shutdown, within shutdownGrace so
 // a dead webhook cannot hold the process open.
-func (n *notifier) flush() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func (n *notifier) flush(ctx context.Context) {
 	for ctx.Err() == nil {
 		select {
 		case j := <-n.queue:

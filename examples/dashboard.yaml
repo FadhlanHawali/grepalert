@@ -13,5 +13,9 @@ data_file: /var/lib/grepalert-dashboard/data.json
 # online get the group's rules again.
 reconcile_interval: 30s
 
+# Fixed enrollment token for automation (Ansible, Terraform, images). Tokens
+# can also be created and revoked in the UI under "Agent enrollment".
+# enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+
 # tls_cert: /etc/grepalert/dashboard.crt
 # tls_key: /etc/grepalert/dashboard.key

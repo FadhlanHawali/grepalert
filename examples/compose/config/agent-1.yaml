@@ -1,8 +1,13 @@
-# agent-1 starts with no rules. Connect it in the dashboard and put it in a
-# group; the group's rules are pushed to it.
+# agent-1 connects OUT to the dashboard: it enrolls with the token below on
+# first start and needs no inbound port. Groups pick it up by its labels.
 name: app-server-1
-listen: ":9300"
-token: ${GREPALERT_AGENT_TOKEN}
+dashboard:
+  url: http://dashboard:9400
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+labels:
+  role: app
+  env: demo
+listen: "127.0.0.1:9300"   # local only, for the container health check
 rules_file: /var/lib/grepalert/rules.yaml
 state_file: /var/lib/grepalert/state.json
 start_from: end
