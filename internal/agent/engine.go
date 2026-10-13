@@ -54,7 +54,8 @@ type engine struct {
 	notify          func(Alert, *rules.CompiledRule)
 	events          *ring
 
-	snap atomic.Pointer[snapshot]
+	snap        atomic.Pointer[snapshot]
+	alertsTotal atomic.Uint64 // every alert dispatched, across rule changes
 
 	mu       sync.Mutex
 	suppress map[suppressKey]*suppressState
@@ -306,6 +307,7 @@ func (e *engine) newAlert(kind string, r *rules.CompiledRule, path, line string,
 }
 
 func (e *engine) dispatch(a Alert, r *rules.CompiledRule) {
+	e.alertsTotal.Add(1)
 	a.Text = alert.FormatText(a)
 	e.events.add(Event{Time: a.Time, Type: "alert", Rule: a.Rule, File: a.File, Message: a.Text})
 	e.notify(a, r)

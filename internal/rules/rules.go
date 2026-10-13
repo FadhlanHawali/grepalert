@@ -158,14 +158,67 @@ func Parse(raw []byte) (*Compiled, error) { return ParseWith(raw, Options{}) }
 
 // ParseWith is Parse with options.
 func ParseWith(raw []byte, opts Options) (*Compiled, error) {
+	// An empty document is a valid (empty) rule set.
+	f, err := Decode(raw)
+	if err != nil {
+		return nil, err
+	}
+	return compile(raw, f, opts)
+}
+
+// Decode parses a YAML rule document without validating it.
+func Decode(raw []byte) (*File, error) {
 	var f File
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
-	// io.EOF means an empty document, which is a valid (empty) rule set.
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse rules: %w", err)
 	}
-	return compile(raw, &f, opts)
+	return &f, nil
+}
+
+// ParseOverlay compiles a base rule set (e.g. a group's rules) plus local
+// extra rules (one machine's own) into one set. Local rules and webhooks may
+// use the base's webhooks but must not reuse its names: the overlay can only
+// add, never silently replace what the group defines. The result's Hash
+// covers both documents.
+func ParseOverlay(base, local []byte) (*Compiled, error) {
+	bf, err := Decode(base)
+	if err != nil {
+		return nil, err
+	}
+	lf, err := Decode(local)
+	if err != nil {
+		return nil, fmt.Errorf("local rules: %w", err)
+	}
+	var errs []error
+	names := map[string]bool{}
+	for _, w := range bf.Webhooks {
+		names[w.Name] = true
+	}
+	for _, w := range lf.Webhooks {
+		if names[w.Name] {
+			errs = append(errs, fmt.Errorf("local rules: webhook %q already exists in the group's rules; use another name", w.Name))
+		}
+	}
+	names = map[string]bool{}
+	for _, r := range bf.Rules {
+		names[r.Name] = true
+	}
+	for _, r := range lf.Rules {
+		if names[r.Name] {
+			errs = append(errs, fmt.Errorf("local rules: rule %q already exists in the group's rules; local rules can only add rules", r.Name))
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	merged := &File{
+		Webhooks: append(append([]Webhook{}, bf.Webhooks...), lf.Webhooks...),
+		Rules:    append(append([]Rule{}, bf.Rules...), lf.Rules...),
+	}
+	raw := append(append(append([]byte{}, base...), "\n# local\n"...), local...)
+	return compile(raw, merged, Options{})
 }
 
 // Compile validates f. raw is kept for hashing and round-tripping.

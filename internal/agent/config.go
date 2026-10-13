@@ -24,6 +24,11 @@ type Config struct {
 	TLSCert   string `yaml:"tls_cert"`
 	TLSKey    string `yaml:"tls_key"`
 	RulesFile string `yaml:"rules_file"`
+	// LocalRulesFile holds extra rules for this machine only. They run on
+	// top of the rules in RulesFile (which a dashboard group may manage) and
+	// may only add rules, never replace the group's. Defaults to
+	// rules.local.yaml next to RulesFile; "off" disables it.
+	LocalRulesFile string `yaml:"local_rules_file"`
 
 	// Dashboard makes the agent connect out to a dashboard (enroll + long-poll)
 	// instead of, or as well as, serving its API on Listen. Labels describe
@@ -70,6 +75,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.RulesFile == "" {
 		c.RulesFile = "rules.yaml"
+	}
+	if c.LocalRulesFile == "" {
+		c.LocalRulesFile = filepath.Join(filepath.Dir(c.RulesFile), "rules.local.yaml")
 	}
 	if c.IdentityFile == "" {
 		c.IdentityFile = filepath.Join(filepath.Dir(c.RulesFile), "grepalert.identity.json")

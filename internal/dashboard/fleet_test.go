@@ -97,7 +97,7 @@ func TestFleetDedupe(t *testing.T) {
 		h.Compile()
 	}
 	g := &GroupRecord{Name: "api", Fleet: FleetSettings{Wait: "5s", Window: "5m"}}
-	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: g.Fleet})
+	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: g.Fleet}, "")
 
 	// 50 hosts report the same error within the wait period.
 	for i := 1; i <= 50; i++ {
@@ -162,7 +162,7 @@ func TestFleetSilence(t *testing.T) {
 	rec := newHookRecorder(t)
 	hooks := []*alert.Hook{{Name: "slack", URL: rec.srv.URL}}
 	hooks[0].Compile()
-	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: FleetSettings{Wait: "0s"}})
+	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: FleetSettings{Wait: "0s"}}, "")
 	g, _ := s.store.Group("api")
 
 	sl, err := s.store.AddSilence(Silence{Group: "api", Rules: []string{"errors"}, StartsAt: time.Now(), EndsAt: time.Now().Add(time.Hour), Reason: "patching"})
@@ -206,7 +206,7 @@ func TestFleetSilence(t *testing.T) {
 func TestAgentDownAlerts(t *testing.T) {
 	s, clk, _ := newFleetServer(t)
 	ops := newHookRecorder(t)
-	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual"})
+	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual"}, "")
 	s.store.data.Settings = Settings{OpsWebhook: OpsWebhook{URL: ops.srv.URL}, AgentDownAfter: "1m"}
 	rec, secret, err := s.store.Enroll(EnrollRequest{Token: "boot", Name: "vm-1", Labels: map[string]string{"a": "b"}}, "boot")
 	if err != nil {
@@ -291,7 +291,7 @@ func TestAlertsThroughDashboardWithFallback(t *testing.T) {
 	appendLine("start")
 	rulesYAML := fmt.Sprintf("webhooks:\n  - name: h\n    url: ${WEBHOOK_URL}\nrules:\n  - name: errors\n    files: [%q]\n    pattern: 'ERROR (?P<code>\\w+)'\n    webhooks: [h]\n    suppress: {window: 1m, group_by: code}\n", logPath)
 	store.AddGroup(GroupRecord{Name: "api", Source: "manual", Rules: rulesYAML, Selector: map[string]string{"role": "api"},
-		Fleet: FleetSettings{Wait: "200ms", Window: "1m"}})
+		Fleet: FleetSettings{Wait: "200ms", Window: "1m"}}, "")
 
 	ra := startConnectedAgent(t, ds.URL, "boot", filepath.Join(dir, "agent"), map[string]string{"role": "api"})
 	g, _ := store.Group("api")
@@ -344,7 +344,7 @@ func TestSilenceCoversOpenWindow(t *testing.T) {
 	rec := newHookRecorder(t)
 	hooks := []*alert.Hook{{Name: "slack", URL: rec.srv.URL}}
 	hooks[0].Compile()
-	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: FleetSettings{Wait: "1s", Window: "1m"}})
+	s.store.AddGroup(GroupRecord{Name: "api", Source: "manual", Fleet: FleetSettings{Wait: "1s", Window: "1m"}}, "")
 	g, _ := s.store.Group("api")
 	s.fleet.ingest(matchAlert("web-01", "K"), hooks, &g)
 	clk.add(time.Second)

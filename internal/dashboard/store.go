@@ -79,6 +79,15 @@ type GroupRecord struct {
 	RulesHash      string    `json:"rules_hash,omitempty"`
 	RulesUpdatedAt time.Time `json:"rules_updated_at,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+
+	// Rollout makes rule changes reach the group's agents in stages.
+	Rollout RolloutSettings `json:"rollout"`
+	// RolloutState is the latest staged rollout, if any.
+	RolloutState *Rollout `json:"rollout_state,omitempty"`
+	// GitPaused stops a git group from following git, e.g. after a rollback
+	// (otherwise the next fetch would bring the bad version back). It holds
+	// the reason; a manual sync clears it.
+	GitPaused string `json:"git_paused,omitempty"`
 }
 
 type storeData struct {
@@ -88,6 +97,8 @@ type storeData struct {
 	Tokens   []EnrollmentToken `json:"enrollment_tokens,omitempty"`
 	Silences []Silence         `json:"silences,omitempty"`
 	Settings Settings          `json:"settings"`
+	// Versions holds each group's rule history, newest last.
+	Versions map[string][]RuleVersion `json:"rule_versions,omitempty"`
 
 	// Access control.
 	Users      []LocalUser          `json:"users,omitempty"`
@@ -124,6 +135,12 @@ func OpenStore(path string) (*Store, error) {
 	}
 	if err := json.Unmarshal(raw, &s.data); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	// Groups from before versioning: their current rules are version one.
+	for _, g := range s.data.Groups {
+		if g.RulesHash != "" && len(s.data.Versions[g.Name]) == 0 {
+			s.addVersionLocked(g.Name, RuleVersion{Hash: g.RulesHash, Rules: g.Rules, Time: g.RulesUpdatedAt, Source: "existing"})
+		}
 	}
 	return s, nil
 }
@@ -323,6 +340,9 @@ func validateGroup(g *GroupRecord) error {
 	if err := CheckLabels(g.Selector); err != nil {
 		return fmt.Errorf("selector: %w", err)
 	}
+	if err := g.Rollout.validate(); err != nil {
+		return fmt.Errorf("staged rollout: %w", err)
+	}
 	switch g.Source {
 	case "manual":
 		g.Git = nil
@@ -358,7 +378,8 @@ func validateGroup(g *GroupRecord) error {
 	return nil
 }
 
-func (s *Store) AddGroup(g GroupRecord) error {
+// AddGroup stores a new group; author is recorded on its first rule version.
+func (s *Store) AddGroup(g GroupRecord, author string) error {
 	if err := validateGroup(&g); err != nil {
 		return err
 	}
@@ -368,9 +389,11 @@ func (s *Store) AddGroup(g GroupRecord) error {
 		return fmt.Errorf("a group named %q already exists", g.Name)
 	}
 	g.CreatedAt = time.Now()
+	g.RolloutState, g.GitPaused = nil, ""
 	if g.Rules != "" {
 		g.RulesHash = rules.Hash([]byte(g.Rules))
 		g.RulesUpdatedAt = time.Now()
+		s.addVersionLocked(g.Name, RuleVersion{Hash: g.RulesHash, Rules: g.Rules, Time: g.RulesUpdatedAt, Author: author, Source: "created"})
 	}
 	s.data.Groups = append(s.data.Groups, g)
 	return s.saveLocked()
@@ -392,25 +415,50 @@ func (s *Store) UpdateGroup(g GroupRecord) error {
 			g.Git.Token = x.Git.Token
 		}
 		g.Rules, g.RulesHash, g.RulesUpdatedAt, g.CreatedAt = x.Rules, x.RulesHash, x.RulesUpdatedAt, x.CreatedAt
+		g.RolloutState, g.GitPaused = x.RolloutState, x.GitPaused
 		s.data.Groups[i] = g
 		return s.saveLocked()
 	}
 	return fmt.Errorf("group %q not found", g.Name)
 }
 
-// SetGroupRules stores a new rule set for a group.
-func (s *Store) SetGroupRules(name string, raw []byte) error {
+// SetGroupRules stores a new rule set for a group and records it as a
+// version. fn, if set, adjusts the group in the same save (e.g. its rollout).
+func (s *Store) SetGroupRules(name string, raw []byte, v RuleVersion, fn func(*GroupRecord)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, g := range s.data.Groups {
 		if g.Name == name {
-			s.data.Groups[i].Rules = string(raw)
-			s.data.Groups[i].RulesHash = rules.Hash(raw)
-			s.data.Groups[i].RulesUpdatedAt = time.Now()
+			g.Rules, g.RulesHash, g.RulesUpdatedAt = string(raw), rules.Hash(raw), time.Now()
+			if fn != nil {
+				fn(&g)
+			}
+			s.data.Groups[i] = g
+			v.Hash, v.Rules, v.Time = g.RulesHash, g.Rules, g.RulesUpdatedAt
+			s.addVersionLocked(name, v)
 			return s.saveLocked()
 		}
 	}
 	return fmt.Errorf("group %q not found", name)
+}
+
+// MutateGroup applies fn to a group's runtime fields (rollout, git pause)
+// and saves. fn must not change its settings or rules.
+func (s *Store) MutateGroup(name string, fn func(*GroupRecord) error) (GroupRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Groups {
+		if s.data.Groups[i].Name != name {
+			continue
+		}
+		g := s.data.Groups[i]
+		if err := fn(&g); err != nil {
+			return GroupRecord{}, err
+		}
+		s.data.Groups[i] = g
+		return g, s.saveLocked()
+	}
+	return GroupRecord{}, fmt.Errorf("group %q not found", name)
 }
 
 // DeleteGroup removes a group. Its agents become ungrouped and keep running
@@ -421,6 +469,7 @@ func (s *Store) DeleteGroup(name string) error {
 	for i, g := range s.data.Groups {
 		if g.Name == name {
 			s.data.Groups = append(s.data.Groups[:i], s.data.Groups[i+1:]...)
+			delete(s.data.Versions, name)
 			for j := range s.data.Agents {
 				if s.data.Agents[j].Group == name {
 					s.data.Agents[j].Group = ""

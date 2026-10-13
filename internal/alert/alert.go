@@ -23,6 +23,7 @@ const (
 	KindFleetSummary = "fleet_summary" // a group's fleet window closed with suppressed matches
 	KindAgentDown    = "agent_down"    // the dashboard lost contact with an agent
 	KindAgentUp      = "agent_up"      // an agent that was down is back
+	KindRollout      = "rollout"       // a staged rollout of a group's rules was halted
 )
 
 // Alert is what gets delivered to a webhook. Webhook templates render it.
@@ -148,6 +149,8 @@ func FormatText(a Alert) string {
 		}
 	case KindRecovered:
 		fmt.Fprintf(&b, "[%s] %s recovered: the expected line was seen again", a.Agent, a.Rule)
+	case KindRollout:
+		fmt.Fprintf(&b, "%s[%s] staged rollout %s", sev, a.Group, a.Line)
 	case KindAgentDown, KindAgentUp:
 		if a.Group != "" {
 			fmt.Fprintf(&b, "[%s] ", a.Group)

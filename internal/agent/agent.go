@@ -36,16 +36,25 @@ type Agent struct {
 	conn    *connector // nil unless dashboard.url is set
 	connErr error
 
-	mu            sync.Mutex // guards everything below
-	rules         *rules.Compiled
+	mu            sync.Mutex      // guards everything below
+	rules         *rules.Compiled // the rules file: the group's rules when a dashboard manages them
 	rulesLoadedAt time.Time
 	rulesOrigin   string
-	tailers       map[string]*tailerHandle
-	resume        map[string]Position // saved positions not yet handed to a tailer
-	stopped       bool
-	sched         *scheduler // polls all tailers on a fixed worker pool
+	// Local overlay: this machine's extra rules, merged on top of rules.
+	localRaw  []byte
+	localHash string
+	localErr  string
+	active    *rules.Compiled // rules plus the overlay; what actually runs
+	tailers   map[string]*tailerHandle
+	resume    map[string]Position // saved positions not yet handed to a tailer
+	stopped   bool
+	sched     *scheduler // polls all tailers on a fixed worker pool
 
 	lastState []byte // last state written, to skip identical writes
+
+	histMu  sync.Mutex
+	hist    map[string]*offsetHist // per file: where it was each minute, for dry runs
+	dryRuns chan struct{}          // one dry run at a time
 }
 
 type tailerHandle struct {
@@ -66,7 +75,10 @@ func New(cfg Config, log *slog.Logger) *Agent {
 		events:  newRing(cfg.EventBuffer),
 		tailers: map[string]*tailerHandle{},
 		rules:   &rules.Compiled{Hash: rules.Hash(nil), Webhooks: map[string]*rules.CompiledWebhook{}},
+		hist:    map[string]*offsetHist{},
+		dryRuns: make(chan struct{}, 1),
 	}
+	a.active = a.rules
 	a.notif = newNotifier(cfg.QueueSize, cfg.Retries, a.events)
 	a.eng = newEngine(cfg.Name, host, a.events, a.notif.enqueue)
 	a.sched = newScheduler(cfg.ReadWorkers, cfg.PollInterval.D(), cfg.IdlePollInterval.D())
@@ -109,6 +121,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.connErr != nil {
 		return a.connErr
 	}
+	a.loadLocalFile()
 	if err := a.loadRulesFile(true); err != nil {
 		return err
 	}
@@ -126,6 +139,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	save := time.NewTicker(saveEvery)
 	defer save.Stop()
+	sample := time.NewTicker(histInterval)
+	defer sample.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -147,12 +162,15 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		case <-save.C:
 			a.saveState(nil)
+		case now := <-sample.C:
+			a.sampleOffsets(now)
 		case <-sweep.C:
 			a.eng.sweep()
 		case <-tick.C:
 			if err := a.loadRulesFile(false); err != nil {
 				a.log.Error("rules file reload failed, keeping previous rules", "err", err)
 			}
+			a.loadLocalFile()
 			a.mu.Lock()
 			a.reconcile(true)
 			a.mu.Unlock()
@@ -210,11 +228,98 @@ func (a *Agent) apply(raw []byte, origin string, persist bool) (*rules.Compiled,
 	a.rules = c
 	a.rulesLoadedAt = time.Now()
 	a.rulesOrigin = origin
+	a.rebuild()
 	a.reconcile(false)
 	a.log.Info("rules applied", "hash", c.Hash, "rules", len(c.Rules), "origin", origin)
 	a.events.add(Event{Time: time.Now(), Type: "rules",
 		Message: fmt.Sprintf("rules %s applied from %s (%d active rules)", c.Hash, origin, len(c.Rules))})
 	return c, nil
+}
+
+// rebuild merges the local overlay into the rules. If the overlay no longer
+// fits (e.g. the group added a rule with the same name), the group's rules
+// still run and the overlay is reported as rejected. Callers hold a.mu.
+func (a *Agent) rebuild() {
+	if len(bytes.TrimSpace(a.localRaw)) == 0 {
+		a.active, a.localErr = a.rules, ""
+		return
+	}
+	m, err := rules.ParseOverlay(a.rules.Raw, a.localRaw)
+	if err != nil {
+		if msg := err.Error(); msg != a.localErr {
+			a.log.Error("local rules rejected, running the group's rules only", "err", err)
+			a.events.add(Event{Time: time.Now(), Type: "rules", Message: "local rules rejected: " + msg})
+		}
+		a.active, a.localErr = a.rules, err.Error()
+		return
+	}
+	a.active, a.localErr = m, ""
+}
+
+// loadLocalFile (re)reads the local overlay file when it changed on disk.
+func (a *Agent) loadLocalFile() {
+	if a.cfg.LocalRulesFile == "off" {
+		return
+	}
+	raw, err := os.ReadFile(a.cfg.LocalRulesFile)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		a.log.Warn("cannot read local rules file", "path", a.cfg.LocalRulesFile, "err", err)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if bytes.Equal(raw, a.localRaw) {
+		return
+	}
+	a.setLocal(raw, "file")
+}
+
+// setLocal installs a new overlay; callers hold a.mu.
+func (a *Agent) setLocal(raw []byte, origin string) {
+	a.localRaw, a.localHash = raw, rules.Hash(raw)
+	a.rebuild()
+	a.reconcile(false)
+	if a.localErr == "" && len(bytes.TrimSpace(raw)) > 0 {
+		n := len(a.active.Rules) - len(a.rules.Rules)
+		a.log.Info("local rules applied", "hash", a.localHash, "rules", n, "origin", origin)
+		a.events.add(Event{Time: time.Now(), Type: "rules",
+			Message: fmt.Sprintf("local rules %s applied from %s (%d extra rules)", a.localHash, origin, n)})
+	}
+}
+
+// LocalRules returns the overlay document, its hash and the reason it is not
+// running, if it is not.
+func (a *Agent) LocalRules() (raw []byte, hash, rejected string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.localRaw, a.localHash, a.localErr
+}
+
+// ApplyLocalRules validates raw against the current rules, persists it to
+// the local rules file and activates it. An empty document removes the
+// overlay.
+func (a *Agent) ApplyLocalRules(raw []byte, origin string) error {
+	if a.cfg.LocalRulesFile == "off" {
+		return errors.New("local rules are disabled on this agent (local_rules_file: off)")
+	}
+	a.mu.Lock()
+	base := a.rules.Raw
+	a.mu.Unlock()
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if _, err := rules.ParseOverlay(base, raw); err != nil {
+			return err
+		}
+	}
+	if err := writeFileAtomic(a.cfg.LocalRulesFile, raw); err != nil {
+		return fmt.Errorf("persist local rules: %w", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.setLocal(raw, origin)
+	if a.localErr != "" { // the group's rules changed in between
+		return errors.New(a.localErr)
+	}
+	return nil
 }
 
 // reconcile expands file globs, starts/stops tailers to match and publishes a
@@ -228,7 +333,7 @@ func (a *Agent) reconcile(discovered bool) {
 		return
 	}
 	byFile := map[string][]*rules.CompiledRule{}
-	for _, r := range a.rules.Rules {
+	for _, r := range a.active.Rules {
 		for _, pat := range r.Files {
 			for _, p := range expandPath(pat) {
 				byFile[p] = append(byFile[p], r)
@@ -258,7 +363,7 @@ func (a *Agent) reconcile(discovered bool) {
 		a.tailers[p] = &tailerHandle{t: t}
 		a.sched.add(t)
 	}
-	a.eng.setSnapshot(&snapshot{rules: a.rules, byFile: byFile})
+	a.eng.setSnapshot(&snapshot{rules: a.active, byFile: byFile})
 }
 
 // expandPath returns glob matches, or the literal path when it has no glob
@@ -285,10 +390,17 @@ func (a *Agent) Rules() *rules.Compiled {
 
 func (a *Agent) Events(limit int) []Event { return a.events.list(limit) }
 
+// Active returns the running rule set: the rules plus the local overlay.
+func (a *Agent) Active() *rules.Compiled {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.active
+}
+
 // TestLine reports which active rules would match line (ignoring files).
 func (a *Agent) TestLine(line string) []string {
 	var hits []string
-	for _, r := range a.Rules().Rules {
+	for _, r := range a.Active().Rules {
 		if r.Re.MatchString(line) && (r.ExcludeRe == nil || !r.ExcludeRe.MatchString(line)) {
 			hits = append(hits, r.Name)
 		}
@@ -297,16 +409,24 @@ func (a *Agent) TestLine(line string) []string {
 }
 
 type Status struct {
-	Name          string       `json:"name"`
-	Host          string       `json:"host"`
-	Version       string       `json:"version"`
-	StartedAt     time.Time    `json:"started_at"`
-	RulesHash     string       `json:"rules_hash"`
-	RulesLoadedAt time.Time    `json:"rules_loaded_at"`
-	RulesOrigin   string       `json:"rules_origin"`
-	Rules         []RuleStatus `json:"rules"`
-	Files         []FileStatus `json:"files"`
-	Webhooks      struct {
+	Name          string    `json:"name"`
+	Host          string    `json:"host"`
+	Version       string    `json:"version"`
+	StartedAt     time.Time `json:"started_at"`
+	RulesHash     string    `json:"rules_hash"`
+	RulesLoadedAt time.Time `json:"rules_loaded_at"`
+	RulesOrigin   string    `json:"rules_origin"`
+	// Local overlay (this machine's extra rules), if any.
+	LocalRulesHash  string       `json:"local_rules_hash,omitempty"`
+	LocalRules      int          `json:"local_rules,omitempty"`
+	LocalRulesError string       `json:"local_rules_error,omitempty"`
+	Rules           []RuleStatus `json:"rules"`
+	// AlertsTotal counts every alert the rules raised since the agent
+	// started, across rule changes. The dashboard uses it to spot alert
+	// spikes during a staged rollout.
+	AlertsTotal uint64       `json:"alerts_total"`
+	Files       []FileStatus `json:"files"`
+	Webhooks    struct {
 		Sent    uint64 `json:"sent"`
 		Failed  uint64 `json:"failed"`
 		Dropped uint64 `json:"dropped"`
@@ -327,6 +447,7 @@ type RuleStatus struct {
 	Pattern  string   `json:"pattern"`
 	Files    []string `json:"files"`
 	Suppress string   `json:"suppress,omitempty"`
+	Local    bool     `json:"local,omitempty"` // from the local overlay
 	// Absence rules: the expected line, how long it may be missing, whether
 	// the rule is firing and when the line was last seen.
 	Absent       string    `json:"absent,omitempty"`
@@ -368,8 +489,14 @@ func (a *Agent) Status() Status {
 
 	a.mu.Lock()
 	s.RulesHash, s.RulesLoadedAt, s.RulesOrigin = a.rules.Hash, a.rulesLoadedAt, a.rulesOrigin
-	for _, r := range a.rules.Rules {
-		rs := RuleStatus{Name: r.Name, Pattern: r.Pattern, Files: r.Files, RuleStats: stats[r.Name]}
+	if len(bytes.TrimSpace(a.localRaw)) > 0 {
+		s.LocalRulesHash, s.LocalRulesError = a.localHash, a.localErr
+		if a.localErr == "" {
+			s.LocalRules = len(a.active.Rules) - len(a.rules.Rules)
+		}
+	}
+	for i, r := range a.active.Rules {
+		rs := RuleStatus{Name: r.Name, Pattern: r.Pattern, Files: r.Files, RuleStats: stats[r.Name], Local: i >= len(a.rules.Rules)}
 		if r.Absence {
 			rs.Absent, rs.For = r.Absent, r.For.D().String()
 			rs.LastSeenLine, rs.Firing = a.eng.absenceInfo(r.Name)
@@ -403,6 +530,7 @@ func (a *Agent) Status() Status {
 	s.Webhooks.Silenced = a.notif.silencedCount.Load()
 	s.Webhooks.Queued = a.notif.sender.Queued()
 	s.SuppressKeys = a.eng.suppressKeys()
+	s.AlertsTotal = a.eng.alertsTotal.Load()
 	if a.conn != nil {
 		ds := a.conn.status()
 		s.Dashboard = &ds

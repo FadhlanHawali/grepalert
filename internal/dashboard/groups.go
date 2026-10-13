@@ -31,6 +31,8 @@ type groupState struct {
 	LastError string                `json:"last_error,omitempty"`
 	Trigger   string                `json:"trigger,omitempty"`
 	Results   map[string]PushResult `json:"results"`
+
+	sample *rolloutSample // alert counters at the start of a rollout stage
 }
 
 // validateForDashboard checks rules without requiring the agents' env vars.
@@ -55,6 +57,7 @@ func (s *Server) snapshotState(group string) groupState {
 	s.stMu.Lock()
 	defer s.stMu.Unlock()
 	cp := *st
+	cp.sample = nil
 	cp.Results = make(map[string]PushResult, len(st.Results))
 	for k, v := range st.Results {
 		cp.Results[k] = v
@@ -70,12 +73,13 @@ func (s *Server) RunReconciler(ctx context.Context) {
 	for {
 		for _, g := range s.store.Groups() {
 			fetch := false
-			if g.Source == "git" && g.Git.Interval != "" {
+			if g.Source == "git" && g.Git.Interval != "" && g.GitPaused == "" {
 				every, _ := time.ParseDuration(g.Git.Interval)
 				fetch = time.Since(s.snapshotState(g.Name).LastFetch) >= every
 			}
 			s.syncGroup(ctx, g.Name, "schedule", fetch)
 		}
+		s.advanceRollouts(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -133,7 +137,10 @@ func (s *Server) doSyncGroup(ctx context.Context, name string, fetch bool, st *g
 			return fmt.Errorf("rules in git are invalid, not applied: %w", err)
 		}
 		if rules.Hash(raw) != g.RulesHash {
-			if err := s.store.SetGroupRules(name, raw); err != nil {
+			prev := g.RulesHash
+			if err := s.store.SetGroupRules(name, raw, RuleVersion{Author: "git", Source: "git", Note: gitSourceText(g.Git)}, func(ng *GroupRecord) {
+				rolloutOnChange(ng, prev, "git")
+			}); err != nil {
 				return err
 			}
 			s.audit.system("git", "git", "group.rules.sync", name, name,
@@ -154,7 +161,8 @@ func (s *Server) doSyncGroup(ctx context.Context, name string, fetch bool, st *g
 		wg.Add(1)
 		go func(a AgentRecord) {
 			defer wg.Done()
-			res := s.ensureRules(ctx, a, []byte(g.Rules), g.RulesHash, "group:"+name)
+			raw, hash := s.targetFor(g, a, members)
+			res := s.ensureRules(ctx, a, raw, hash, "group:"+name)
 			mu.Lock()
 			results[a.Name] = res
 			mu.Unlock()
@@ -223,7 +231,8 @@ func (s *Server) pushToNewMember(ctx context.Context, a AgentRecord) *PushResult
 	if !ok || g.RulesHash == "" {
 		return nil
 	}
-	res := s.ensureRules(ctx, a, []byte(g.Rules), g.RulesHash, "group:"+g.Name)
+	raw, hash := s.targetFor(g, a, s.store.Members(g.Name))
+	res := s.ensureRules(ctx, a, raw, hash, "group:"+g.Name)
 	st := s.state(g.Name)
 	s.stMu.Lock()
 	st.Results[a.Name] = res

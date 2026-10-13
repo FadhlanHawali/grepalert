@@ -118,6 +118,17 @@ func newAgentClient(a AgentRecord) *agentClient {
 
 // call performs a request against an agent's API.
 func (c *agentClient) call(ctx context.Context, method, path string, body io.Reader, hdr http.Header) (*http.Response, error) {
+	return c.do(ctx, c.http, method, path, body, hdr)
+}
+
+// callLong is call for slow requests (dry runs): only ctx bounds it.
+func (c *agentClient) callLong(ctx context.Context, method, path string, body io.Reader, hdr http.Header) (*http.Response, error) {
+	hc := *c.http
+	hc.Timeout = 0
+	return c.do(ctx, &hc, method, path, body, hdr)
+}
+
+func (c *agentClient) do(ctx context.Context, hc *http.Client, method, path string, body io.Reader, hdr http.Header) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.rec.URL, "/")+path, body)
 	if err != nil {
 		return nil, err
@@ -128,7 +139,7 @@ func (c *agentClient) call(ctx context.Context, method, path string, body io.Rea
 	if tok := rules.ExpandEnv(c.rec.Token); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
-	return c.http.Do(req)
+	return hc.Do(req)
 }
 
 // status fetches an agent's status JSON.
@@ -186,6 +197,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agents/{name}/test", onAgent(RoleViewer, s.proxy("POST", "/api/v1/test")))
 	mux.HandleFunc("PUT /api/agents/{name}/rules", onAgent(RoleEditor, s.proxy("PUT", "/api/v1/rules")))
 	mux.HandleFunc("POST /api/agents/{name}/validate", onAgent(RoleEditor, s.proxy("POST", "/api/v1/rules/validate")))
+	mux.HandleFunc("GET /api/agents/{name}/local-rules", onAgent(RoleViewer, s.handleGetLocalRules))
+	mux.HandleFunc("PUT /api/agents/{name}/local-rules", onAgent(RoleEditor, s.handlePutLocalRules))
 
 	mux.HandleFunc("POST /api/groups", admin(s.handleAddGroup))
 	mux.HandleFunc("PUT /api/groups/{name}", admin(s.handleUpdateGroup))
@@ -195,6 +208,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/groups/{name}/rules", onGroup(RoleEditor, s.handleSetGroupRules))
 	mux.HandleFunc("POST /api/groups/{name}/validate", onGroup(RoleEditor, s.handleValidate))
 	mux.HandleFunc("POST /api/groups/{name}/sync", onGroup(RoleEditor, s.handleSyncGroup))
+	mux.HandleFunc("POST /api/groups/{name}/dryrun", onGroup(RoleEditor, s.handleDryRun))
+	mux.HandleFunc("GET /api/groups/{name}/versions", onGroup(RoleViewer, s.handleListVersions))
+	mux.HandleFunc("GET /api/groups/{name}/versions/{hash}", onGroup(RoleViewer, s.handleGetVersion))
+	mux.HandleFunc("POST /api/groups/{name}/rollback", onGroup(RoleEditor, s.handleRollback))
+	mux.HandleFunc("POST /api/groups/{name}/rollout", onGroup(RoleEditor, s.handleRolloutAction))
 
 	mux.HandleFunc("GET /api/tokens", admin(s.handleListTokens))
 	mux.HandleFunc("POST /api/tokens", admin(s.handleCreateToken))
@@ -301,17 +319,29 @@ type groupView struct {
 	RulesUpdatedAt time.Time         `json:"rules_updated_at"`
 	Members        []string          `json:"members"`
 	State          groupState        `json:"state"`
+	Rollout        RolloutSettings   `json:"rollout"`
+	RolloutState   *Rollout          `json:"rollout_state,omitempty"`
+	Canaries       []string          `json:"canaries,omitempty"` // members on the new version during a rollout
+	GitPaused      string            `json:"git_paused,omitempty"`
 }
 
 func (s *Server) groupView(g GroupRecord) groupView {
 	v := groupView{Name: g.Name, Description: g.Description, Source: g.Source, Selector: g.Selector, Fleet: g.Fleet, OpsWebhookURL: g.OpsWebhookURL, RulesHash: g.RulesHash,
-		RulesUpdatedAt: g.RulesUpdatedAt, Members: []string{}, State: s.snapshotState(g.Name)}
+		RulesUpdatedAt: g.RulesUpdatedAt, Members: []string{}, State: s.snapshotState(g.Name),
+		Rollout: g.Rollout, RolloutState: g.RolloutState, GitPaused: g.GitPaused}
 	if g.Git != nil {
 		v.Git = &gitView{Provider: g.Git.Provider, BaseURL: g.Git.BaseURL, Repo: g.Git.Repo, Ref: g.Git.Ref,
 			Path: g.Git.Path, Interval: g.Git.Interval, HasToken: g.Git.Token != ""}
 	}
-	for _, a := range s.store.Members(g.Name) {
+	members := s.store.Members(g.Name)
+	for _, a := range members {
 		v.Members = append(v.Members, a.Name)
+	}
+	if ro := g.RolloutState; ro != nil && ro.Status == "running" {
+		for name := range canaries(ro, g.Rollout.stages(), members) {
+			v.Canaries = append(v.Canaries, name)
+		}
+		sort.Strings(v.Canaries)
 	}
 	return v
 }
@@ -667,6 +697,7 @@ type groupRequest struct {
 	Selector    map[string]string `json:"selector"`
 	Fleet       FleetSettings     `json:"fleet"`
 	OpsWebhook  string            `json:"ops_webhook_url"`
+	Rollout     RolloutSettings   `json:"rollout"`
 	// Rules optionally seeds a manual group's rule set on creation.
 	Rules string `json:"rules"`
 }
@@ -676,7 +707,7 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook)}
+	g := GroupRecord{Name: strings.TrimSpace(req.Name), Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook), Rollout: req.Rollout}
 	if req.Rules != "" && req.Source == "manual" {
 		if _, err := validateForDashboard([]byte(req.Rules)); err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
@@ -684,7 +715,7 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		g.Rules = req.Rules
 	}
-	if err := s.store.AddGroup(g); err != nil {
+	if err := s.store.AddGroup(g, authOf(r).id.User); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -706,12 +737,18 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before, _ := s.store.Group(name)
-	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook)}
+	g := GroupRecord{Name: name, Description: req.Description, Source: req.Source, Git: req.Git, Selector: req.Selector, Fleet: req.Fleet, OpsWebhookURL: strings.TrimSpace(req.OpsWebhook), Rollout: req.Rollout}
 	if err := s.store.UpdateGroup(g); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	after, _ := s.store.Group(name)
+	if ro := after.RolloutState; ro != nil && ro.Status == "running" && !after.Rollout.Enabled {
+		after, _ = s.store.MutateGroup(name, func(g *GroupRecord) error {
+			g.RolloutState.finish("done", "staged rollout turned off by "+authOf(r).id.User+"; every agent gets "+g.RulesHash)
+			return nil
+		})
+	}
 	s.audit.record(r, "group.update", name, name, "ok", "", lineDiff(groupSettingsText(before), groupSettingsText(after)))
 	resp := map[string]any{"name": name}
 	if err := s.syncGroup(r.Context(), name, "settings changed", g.Source == "git"); err != nil {
@@ -765,7 +802,10 @@ func (s *Server) handleSetGroupRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	if err := s.store.SetGroupRules(name, raw); err != nil {
+	actor := authOf(r).id.User
+	if err := s.store.SetGroupRules(name, raw, RuleVersion{Author: actor, Source: "edited"}, func(ng *GroupRecord) {
+		rolloutOnChange(ng, g.RulesHash, actor)
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -774,7 +814,8 @@ func (s *Server) handleSetGroupRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hash": c.Hash, "rules": len(c.Rules), "state": s.snapshotState(name)})
+	after, _ := s.store.Group(name)
+	writeJSON(w, http.StatusOK, map[string]any{"hash": c.Hash, "rules": len(c.Rules), "state": s.snapshotState(name), "rollout": after.RolloutState})
 }
 
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
@@ -796,6 +837,10 @@ func (s *Server) handleSyncGroup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.store.Group(name); !ok {
 		writeErr(w, http.StatusNotFound, errors.New("group not found"))
 		return
+	}
+	if g, _ := s.store.Group(name); g.GitPaused != "" {
+		s.store.MutateGroup(name, func(g *GroupRecord) error { g.GitPaused = ""; return nil })
+		s.audit.record(r, "group.git.resume", name, name, "ok", "following git again", "")
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
@@ -868,6 +913,12 @@ func groupSettingsText(g GroupRecord) string {
 	}
 	fmt.Fprintf(&b, "selector: %s\nfleet: disabled=%v wait=%s window=%s\nagent-down webhook: %s\n",
 		labelsString(g.Selector), g.Fleet.Disabled, orNone(g.Fleet.Wait), orNone(g.Fleet.Window), maskURL(g.OpsWebhookURL))
+	if g.Rollout.Enabled {
+		fmt.Fprintf(&b, "staged rollout: stages=%s soak=%s max_increase=%g min_alerts=%d\n",
+			strings.Join(g.Rollout.Stages, ","), g.Rollout.Soak, g.Rollout.MaxIncrease, g.Rollout.MinAlerts)
+	} else {
+		b.WriteString("staged rollout: off\n")
+	}
 	return b.String()
 }
 
