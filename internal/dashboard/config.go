@@ -56,8 +56,8 @@ type Auth struct {
 // OIDCConfig is an OpenID Connect identity provider.
 type OIDCConfig struct {
 	// Name is shown on the sign-in button, e.g. "Okta" or "Microsoft".
-	Name         string `yaml:"name"`
-	Issuer       string `yaml:"issuer"` // e.g. https://login.microsoftonline.com/<tenant>/v2.0
+	Name   string `yaml:"name"`
+	Issuer string `yaml:"issuer"` // e.g. https://login.microsoftonline.com/<tenant>/v2.0
 	// DiscoveryURL is where the dashboard itself reaches the provider, when
 	// that differs from Issuer (the public URL browsers use), e.g. inside
 	// Docker or Kubernetes: http://keycloak:8080/realms/acme. Tokens must still
