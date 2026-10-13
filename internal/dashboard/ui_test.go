@@ -9,6 +9,19 @@ import (
 	"testing/fstest"
 )
 
+func TestHealthz(t *testing.T) {
+	h := newHarness(t)
+	resp, err := http.Get(h.dash.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "ok" {
+		t.Fatalf("healthz: %d %q", resp.StatusCode, body)
+	}
+}
+
 func TestUIHandler(t *testing.T) {
 	get := func(h http.Handler, path string) (*http.Response, string) {
 		rec := httptest.NewRecorder()

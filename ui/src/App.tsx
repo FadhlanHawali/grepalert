@@ -12,6 +12,7 @@ import { AuditPage } from './pages/Audit';
 import { EnrollPage } from './pages/Enroll';
 import { SettingsPage } from './pages/Settings';
 import { SilencesPage } from './pages/Silences';
+import { PlaygroundPage } from './pages/Playground';
 import { AgentDetail } from './pages/agent/AgentDetail';
 import { GroupPage } from './pages/group/GroupPage';
 
@@ -86,6 +87,8 @@ function Nav() {
       <div className="label">Alerts</div>
       {link({ kind: 'alerts' }, 'Alert history')}
       {link({ kind: 'silences' }, <>Silences {silenced > 0 && <span className="count">{silenced} active</span>}</>)}
+      <div className="label">Tools</div>
+      {link({ kind: 'playground' }, 'Rule playground')}
       {app.isAdmin && <>
         <div className="label">Setup</div>
         {link({ kind: 'enroll' }, 'Agent enrollment')}
@@ -107,6 +110,7 @@ function Main() {
     case 'settings': return <SettingsPage />;
     case 'access': return <AccessPage />;
     case 'audit': return <AuditPage />;
+    case 'playground': return <PlaygroundPage />;
   }
   if (!app.loaded) return <div className="muted">Loading…</div>;
   if (!data.agents.length && !data.groups.length) return <Welcome />;

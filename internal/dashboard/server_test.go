@@ -174,3 +174,25 @@ func TestGitGroup(t *testing.T) {
 		t.Fatal("broken git content must not reach agents")
 	}
 }
+
+func TestPlayground(t *testing.T) {
+	h := newHarness(t)
+	r := h.do("POST", "/api/playground", map[string]any{
+		"rules": "webhooks: [{name: w, url: '${NOT_SET}', template: '{{ .Groups.ds }} down'}]\n" +
+			"rules:\n  - {name: ds, files: [/x], pattern: 'DS (?P<ds>[a-z]+) down', webhooks: [w]}\n",
+		"lines": "DS one down\r\nok\n",
+	}, http.StatusOK)
+	res := r["result"].(map[string]any)
+	alerts := res["alerts"].([]any)
+	if len(res["lines"].([]any)) != 2 || len(alerts) != 1 {
+		t.Fatalf("result = %v", res)
+	}
+	d := alerts[0].(map[string]any)["deliveries"].([]any)[0].(map[string]any)
+	if d["body"] != "one down" || d["content_type"] != "text/plain; charset=utf-8" {
+		t.Fatalf("delivery = %v", d)
+	}
+	if g := r["rules"].([]any)[0].(map[string]any)["groups"].([]any); len(g) != 1 || g[0] != "ds" {
+		t.Fatalf("rules = %v", r["rules"])
+	}
+	h.do("POST", "/api/playground", map[string]any{"rules": "rules: [{name: x}]", "lines": "a"}, http.StatusUnprocessableEntity)
+}

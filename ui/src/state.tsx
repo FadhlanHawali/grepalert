@@ -5,10 +5,10 @@ import type { Agent, Group, Me, Overview, Role, Silence } from './types';
 // ---------- routing (hash based: #group/web, #alerts, ...) ----------
 
 export type View =
-  | { kind: 'all' | 'ungrouped' | 'enroll' | 'alerts' | 'silences' | 'settings' | 'access' | 'audit' }
+  | { kind: 'all' | 'ungrouped' | 'enroll' | 'alerts' | 'silences' | 'settings' | 'access' | 'audit' | 'playground' }
   | { kind: 'group'; name: string };
 
-const PAGES = ['ungrouped', 'enroll', 'alerts', 'silences', 'settings', 'access', 'audit'] as const;
+const PAGES = ['ungrouped', 'enroll', 'alerts', 'silences', 'settings', 'access', 'audit', 'playground'] as const;
 
 export function parseHash(hash: string): View {
   const h = decodeURIComponent(hash.slice(1));

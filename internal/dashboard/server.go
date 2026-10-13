@@ -159,6 +159,8 @@ func (c *agentClient) status(ctx context.Context) (json.RawMessage, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", uiHandler())
+	// Liveness for load balancers, Kubernetes and the Docker health check (no auth).
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 
 	// Sign-in (public paths are listed in isPublic).
 	mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
@@ -209,6 +211,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens", admin(s.handleCreateToken))
 	mux.HandleFunc("DELETE /api/tokens/{id}", admin(s.handleRevokeToken))
 
+	mux.HandleFunc("POST /api/playground", s.handlePlayground) // any signed-in user: stateless, sends nothing
 	mux.HandleFunc("GET /api/alerts", s.handleHistory)
 	mux.HandleFunc("GET /api/silences", s.handleListSilences)
 	mux.HandleFunc("POST /api/silences", s.handleAddSilence)           // editor of the silenced group, checked inside

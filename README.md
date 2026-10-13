@@ -352,6 +352,13 @@ rules:
 
 The webhook receives `{"text": "Critical, DS1 is suspended"}`.
 - **Summaries render the same way.** The "N more suppressed" summary carries the captured values of the last suppressed line, and so do fleet summaries, so the same template works for them too.
+- **Try it first.** The dashboard's **Rule playground** (under *Tools*) takes rules and pasted log lines and shows the result as you type:
+  - which line matched which rule
+  - what each `(?P<name>...)` captured
+  - whether each match alerts, is suppressed or is excluded
+  - the exact body each webhook would receive, including suppression summaries
+
+  It saves and sends nothing. You can start from the rules of any group.
 - **Branching on the kind.** To word summaries differently, branch on the kind: `{{ if eq .Kind "summary" }}…{{ end }}`.
 - **Other fields.** `.Groups.reason` is there too, as are `.Agent`, `.Host` and `.Time`.
 

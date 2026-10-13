@@ -40,6 +40,7 @@ FROM alpine:3.22 AS dashboard
 RUN apk add --no-cache tzdata
 COPY --from=build /out/grepalert-dashboard /usr/local/bin/
 EXPOSE 9400
+HEALTHCHECK --interval=10s --timeout=3s CMD wget -qO- http://127.0.0.1:9400/healthz || exit 1
 ENTRYPOINT ["grepalert-dashboard"]
 CMD ["-config", "/etc/grepalert/dashboard.yaml"]
 

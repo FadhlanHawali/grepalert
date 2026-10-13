@@ -135,3 +135,16 @@ pre.diff .add, h3 .add { color: var(--ok); } pre.diff .del, h3 .del { color: var
 textarea.short { min-height: 160px; }
 .delta-up { color: var(--bad); font-weight: 600; } .delta-down { color: var(--ok); font-weight: 600; }
 .samples { margin: 4px 0 0; font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+/* rule playground */
+.playground { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.playground textarea { min-height: 300px; }
+tr.dim td { color: var(--muted); }
+.match + .match { margin-top: 4px; }
+.captures { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.cap { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; padding: 0 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.cap b { font-weight: 600; color: var(--accent); }
+.sim-alert { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; }
+.sim-alert + .sim-alert { margin-top: 10px; }
+.delivery pre.preview { margin-top: 4px; }
+@media (max-width: 900px) { .playground { grid-template-columns: 1fr; } }
