@@ -1,0 +1,24 @@
+# Dashboard behind Keycloak single sign-on.
+listen: ":9400"
+data_file: /var/lib/grepalert-dashboard/data.json
+reconcile_interval: 30s
+enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+
+auth:
+  # Break-glass local admin (also used by the setup job).
+  username: root
+  password: ${GREPALERT_ROOT_PASSWORD}
+  oidc:
+    name: Keycloak
+    # Browsers reach Keycloak at localhost:8180; tokens carry this issuer.
+    issuer: http://localhost:8180/realms/grepalert
+    # The dashboard container reaches Keycloak by its service name.
+    discovery_url: http://keycloak:8080/realms/grepalert
+    client_id: grepalert-dashboard
+    client_secret: ${GREPALERT_OIDC_CLIENT_SECRET}
+    redirect_url: http://localhost:9420/auth/callback
+    groups_claim: groups
+    allowed_domains: [example.com]
+  # Members of this Keycloak group are dashboard admins.
+  admins: ["group:grepalert-admins"]
+  session_ttl: 8h

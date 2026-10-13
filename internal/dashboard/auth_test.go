@@ -277,6 +277,7 @@ type fakeIdP struct {
 	mu     sync.Mutex
 	codes  map[string]string // code -> nonce
 	claims map[string]any
+	issuer string // public issuer; defaults to the server URL
 }
 
 func newFakeIdP(t *testing.T, claims map[string]any) *fakeIdP {
@@ -285,10 +286,16 @@ func newFakeIdP(t *testing.T, claims map[string]any) *fakeIdP {
 	mux := http.NewServeMux()
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
-	iss := p.srv.URL
+	iss := func() string {
+		if p.issuer != "" {
+			return p.issuer
+		}
+		return p.srv.URL
+	}
+	base := p.srv.URL
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"issuer": iss, "authorization_endpoint": iss + "/authorize",
-			"token_endpoint": iss + "/token", "jwks_uri": iss + "/jwks", "id_token_signing_alg_values_supported": []string{"RS256"}})
+		json.NewEncoder(w).Encode(map[string]any{"issuer": iss(), "authorization_endpoint": base + "/authorize",
+			"token_endpoint": base + "/token", "jwks_uri": base + "/jwks", "end_session_endpoint": base + "/logout", "id_token_signing_alg_values_supported": []string{"RS256"}})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"}}})
@@ -316,7 +323,7 @@ func newFakeIdP(t *testing.T, claims map[string]any) *fakeIdP {
 			return
 		}
 		sig, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "k1"))
-		c := map[string]any{"iss": iss, "aud": "grepalert", "sub": "u1", "nonce": nonce,
+		c := map[string]any{"iss": iss(), "aud": "grepalert", "sub": "u1", "nonce": nonce,
 			"iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix()}
 		for k, v := range p.claims {
 			c[k] = v
@@ -381,6 +388,19 @@ func TestOIDCLogin(t *testing.T) {
 		t.Fatalf("group-claim editor could not edit: %d", code)
 	}
 
+	// Signing out of an SSO session also ends the provider session.
+	code, body := h.req(c, "POST", "/auth/logout", nil)
+	var out struct{ Redirect string }
+	json.Unmarshal([]byte(body), &out)
+	lu, _ := url.Parse(out.Redirect)
+	if code != 200 || !strings.HasPrefix(out.Redirect, idp.srv.URL+"/logout?") || lu.Query().Get("id_token_hint") == "" ||
+		lu.Query().Get("post_logout_redirect_uri") != h.ts.URL+"/login" {
+		t.Fatalf("logout: %d %s", code, body)
+	}
+	if code, _ := h.req(c, "GET", "/api/me", nil); code != http.StatusUnauthorized {
+		t.Fatal("still signed in after logout")
+	}
+
 	// Wrong domain is refused.
 	idp.claims["email"] = "eve@evil.test"
 	resp, _ = h.ssoLogin(h.client())
@@ -425,5 +445,32 @@ func TestLineDiff(t *testing.T) {
 	}
 	if lineDiff("same", "same") != "" {
 		t.Fatal("equal texts should give an empty diff")
+	}
+}
+
+// The provider is reached at an internal URL but issues tokens under its
+// public URL (Docker/Kubernetes); discovery_url makes that work.
+func TestOIDCDiscoveryURL(t *testing.T) {
+	idp := newFakeIdP(t, map[string]any{"email": "kim@example.com", "email_verified": true})
+	idp.issuer = "http://sso.public.example/realms/acme"
+	for _, withDiscovery := range []bool{false, true} {
+		h := newAuthHarness(t, func(c *Config) {
+			c.Auth.OIDC = &OIDCConfig{Issuer: idp.issuer, ClientID: "grepalert", RedirectURL: "PLACEHOLDER"}
+			if withDiscovery {
+				c.Auth.OIDC.DiscoveryURL = idp.srv.URL
+			}
+		})
+		h.srv.cfg.Auth.OIDC.RedirectURL = h.ts.URL + "/auth/callback"
+		resp, err := h.ssoLogin(h.client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		loc := resp.Header.Get("Location")
+		if withDiscovery && loc != "/#group/web" {
+			t.Fatalf("with discovery_url: redirected to %q", loc)
+		}
+		if !withDiscovery && !strings.HasPrefix(loc, "/login?error=") {
+			t.Fatalf("without discovery_url the public issuer is unreachable, want an error, got %q", loc)
+		}
 	}
 }

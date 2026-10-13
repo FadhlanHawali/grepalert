@@ -247,6 +247,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, sessionCookie)
 	s.audit.record(r, "logout", a.id.User, "", "ok", "", "")
+	// SSO users are also signed out of the identity provider, so the next
+	// "Sign in" asks for credentials again (single logout).
+	if a.id.Method == "oidc" {
+		if u := s.providerLogoutURL(r); u != "" {
+			http.SetCookie(w, &http.Cookie{Name: idTokenCookie, Value: "", Path: "/auth/", HttpOnly: true, MaxAge: -1})
+			writeJSON(w, http.StatusOK, map[string]string{"redirect": u})
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

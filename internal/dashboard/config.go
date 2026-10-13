@@ -58,6 +58,11 @@ type OIDCConfig struct {
 	// Name is shown on the sign-in button, e.g. "Okta" or "Microsoft".
 	Name         string `yaml:"name"`
 	Issuer       string `yaml:"issuer"` // e.g. https://login.microsoftonline.com/<tenant>/v2.0
+	// DiscoveryURL is where the dashboard itself reaches the provider, when
+	// that differs from Issuer (the public URL browsers use), e.g. inside
+	// Docker or Kubernetes: http://keycloak:8080/realms/acme. Tokens must still
+	// be issued by Issuer.
+	DiscoveryURL string `yaml:"discovery_url"`
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
 	// RedirectURL is this dashboard's callback: https://<host>/auth/callback

@@ -1,0 +1,13 @@
+{
+  "name": "web",
+  "description": "Web servers",
+  "source": "manual",
+  "selector": {
+    "role": "web"
+  },
+  "fleet": {
+    "wait": "5s",
+    "window": "5m"
+  },
+  "rules": "webhooks:\n  - name: sink\n    url: ${WEBHOOK_URL}/web\n    template: '{\"text\": {{ json .Text }}}'\n\nrules:\n  - name: http-5xx\n    files: [\"/var/log/demo/web.log\"]\n    pattern: '\" (?P<status>5\\d\\d) '\n    severity: warning\n    webhooks: [sink]\n    suppress: {window: 1m, group_by: status}\n"
+}

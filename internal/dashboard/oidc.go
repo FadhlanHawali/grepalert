@@ -22,9 +22,10 @@ import (
 // cookie.
 
 type oidcClient struct {
-	cfg      *OIDCConfig
-	verifier *oidc.IDTokenVerifier
-	oauth    oauth2.Config
+	cfg        *OIDCConfig
+	verifier   *oidc.IDTokenVerifier
+	oauth      oauth2.Config
+	endSession string // provider logout URL, if it supports RP-initiated logout
 }
 
 // oidcState travels in a short-lived signed cookie between the redirect to
@@ -56,7 +57,14 @@ func (s *Server) oidc(ctx context.Context) (*oidcClient, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	p, err := oidc.NewProvider(ctx, cfg.Issuer)
+	discover := cfg.Issuer
+	if cfg.DiscoveryURL != "" {
+		// Fetch metadata from the internal URL but still require tokens to be
+		// issued by the public issuer.
+		ctx = oidc.InsecureIssuerURLContext(ctx, cfg.Issuer)
+		discover = cfg.DiscoveryURL
+	}
+	p, err := oidc.NewProvider(ctx, discover)
 	if err != nil {
 		return nil, fmt.Errorf("identity provider %s: %w", cfg.Issuer, err)
 	}
@@ -65,6 +73,12 @@ func (s *Server) oidc(ctx context.Context) (*oidcClient, error) {
 		verifier: p.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		oauth: oauth2.Config{ClientID: cfg.ClientID, ClientSecret: rules.ExpandEnv(cfg.ClientSecret),
 			Endpoint: p.Endpoint(), RedirectURL: cfg.RedirectURL, Scopes: cfg.Scopes},
+	}
+	var meta struct {
+		EndSession string `json:"end_session_endpoint"`
+	}
+	if p.Claims(&meta) == nil {
+		s.oidcInit.client.endSession = meta.EndSession
 	}
 	return s.oidcInit.client, nil
 }
@@ -139,6 +153,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSession(w, r, id)
+	// Kept only for signing out of the identity provider too (id_token_hint).
+	http.SetCookie(w, &http.Cookie{Name: idTokenCookie, Value: raw, Path: "/auth/", HttpOnly: true,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: int(s.cfg.Auth.SessionTTL.D().Seconds())})
 	s.audit.recordAs(r, id, "login.oidc", id.User, "", "ok", fmt.Sprintf("groups: %s", strings.Join(id.Groups, ", ")), "")
 	http.Redirect(w, r, safeNext(st.Next), http.StatusFound)
 }
@@ -179,4 +196,24 @@ func identityFromClaims(claims map[string]any, cfg *OIDCConfig) (Identity, error
 		id.Groups = []string{strings.TrimPrefix(g, "/")}
 	}
 	return id, nil
+}
+
+const idTokenCookie = "grepalert_idt"
+
+// providerLogoutURL returns where to send the browser to end the identity
+// provider's session as well, or "" if the provider does not support it.
+func (s *Server) providerLogoutURL(r *http.Request) string {
+	c, err := s.oidc(r.Context())
+	if err != nil || c.endSession == "" {
+		return ""
+	}
+	q := url.Values{"client_id": {c.cfg.ClientID}}
+	if ck, err := r.Cookie(idTokenCookie); err == nil && ck.Value != "" {
+		q.Set("id_token_hint", ck.Value) // lets the provider skip its confirmation page
+	}
+	if u, err := url.Parse(c.cfg.RedirectURL); err == nil {
+		u.Path, u.RawQuery = "/login", ""
+		q.Set("post_logout_redirect_uri", u.String())
+	}
+	return c.endSession + "?" + q.Encode()
 }

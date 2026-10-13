@@ -1,0 +1,13 @@
+{
+  "name": "db",
+  "description": "Database servers",
+  "source": "manual",
+  "selector": {
+    "role": "db"
+  },
+  "fleet": {
+    "wait": "5s",
+    "window": "5m"
+  },
+  "rules": "webhooks:\n  - name: sink\n    url: ${WEBHOOK_URL}/db\n    template: '{\"text\": {{ json .Text }}}'\n\nrules:\n  - name: db-errors\n    files: [\"/var/log/demo/db.log\"]\n    pattern: 'ERROR (?P<code>\\w+)'\n    severity: critical\n    webhooks: [sink]\n    suppress: {window: 1m, group_by: code}\n\n  # Absence rule: the database logs a checkpoint every few seconds; if that\n  # stops for 2 minutes, something is stuck.\n  - name: db-heartbeat\n    files: [\"/var/log/demo/db.log\"]\n    absent: 'checkpoint complete'\n    for: 2m\n    severity: critical\n    webhooks: [sink]\n"
+}

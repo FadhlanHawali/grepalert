@@ -847,9 +847,12 @@ document.addEventListener('click', async e => {
     case 'close-agent': selAgent = null; return render();
     case 'edit-agent': return openAgentDialog(a);
     case 'goto-enroll': $('#dlg-agent').close(); return go({ kind: 'enroll' });
-    case 'logout':
-      try { await api('POST', '/auth/logout'); } catch {}
-      location.href = '/login'; return;
+    case 'logout': {
+      // SSO users are sent on to the identity provider to end that session too.
+      let to = '/login';
+      try { const { data: r } = await api('POST', '/auth/logout'); if (r && r.redirect) to = r.redirect; } catch {}
+      location.href = to; return;
+    }
     case 'grant': {
       const value = $('#ab-subject').value.trim();
       if (!value) { $('#ab-subject').focus(); return; }

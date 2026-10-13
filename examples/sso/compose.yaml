@@ -1,21 +1,140 @@
-# Keycloak with a "grepalert" realm, for trying single sign-on locally.
+# grepalert with Keycloak single sign-on: a complete local example.
 #
-#   docker compose up -d                      # Keycloak on http://localhost:8180
-#   go run ./cmd/grepalert-dashboard -config examples/sso/dashboard.yaml
-#   open http://localhost:9420
+#   cd examples/sso
+#   docker compose up -d --build
 #
-# Test users (passwords in realm-grepalert.json): alice (group db-team),
-# bob (no group: signs in but sees nothing), ops-admin (group grepalert-admins).
-# Keycloak admin console: http://localhost:8180 (admin / admin).
+#   Dashboard        http://localhost:9420   "Sign in with Keycloak"
+#   Keycloak admin   http://localhost:8180   (admin / KEYCLOAK_ADMIN_PASSWORD in .env)
+#   Received alerts  http://localhost:9629
+#
+# Demo users (passwords in .env):
+#   ops-admin  group grepalert-admins -> dashboard admin
+#   alice      group db-team          -> editor of group "db"
+#   carol      group web-team         -> editor of "web", plus viewer of "db"
+#   bob        no group               -> signs in, sees nothing until granted a role
 name: grepalert-sso
 
+x-agent: &agent
+  image: grepalert-agent:dev
+  build: { context: ../.., target: agent }
+  restart: unless-stopped
+  environment:
+    GREPALERT_ENROLL_TOKEN: ${GREPALERT_ENROLL_TOKEN}
+    WEBHOOK_URL: http://webhook-sink:9599/hook
+  mem_limit: 64m
+  depends_on:
+    dashboard: { condition: service_started }
+    loggen: { condition: service_started }
+
 services:
+  # ---- identity provider ----
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [keycloak-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      retries: 20
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.0.7
-    command: ["start-dev", "--import-realm"]
+    # Production mode backed by Postgres; the realm is imported on first start.
+    command: ["start", "--import-realm"]
+    restart: unless-stopped
     environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Public URL for browsers and token issuer...
+      KC_HOSTNAME: http://localhost:8180
+      # ...while server-to-server calls (token, keys) use whatever address the
+      # caller used, e.g. http://keycloak:8080 from the dashboard container.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"        # local demo only: use HTTPS in production
+      KC_HEALTH_ENABLED: "true"
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # Placeholders used by realm-grepalert.json
+      GREPALERT_OIDC_CLIENT_SECRET: ${GREPALERT_OIDC_CLIENT_SECRET}
+      DEMO_PASSWORD_OPS: ${DEMO_PASSWORD_OPS}
+      DEMO_PASSWORD_ALICE: ${DEMO_PASSWORD_ALICE}
+      DEMO_PASSWORD_CAROL: ${DEMO_PASSWORD_CAROL}
+      DEMO_PASSWORD_BOB: ${DEMO_PASSWORD_BOB}
     volumes:
       - ./realm-grepalert.json:/opt/keycloak/data/import/realm-grepalert.json:ro
     ports: ["8180:8080"]
+    depends_on:
+      keycloak-db: { condition: service_healthy }
+    healthcheck:
+      # The image has no curl: ask the management port with bash /dev/tcp.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      retries: 60
+
+  # ---- grepalert ----
+  dashboard:
+    image: grepalert-dashboard:dev
+    build: { context: ../.., target: dashboard }
+    restart: unless-stopped
+    environment:
+      GREPALERT_ROOT_PASSWORD: ${GREPALERT_ROOT_PASSWORD}
+      GREPALERT_OIDC_CLIENT_SECRET: ${GREPALERT_OIDC_CLIENT_SECRET}
+      GREPALERT_ENROLL_TOKEN: ${GREPALERT_ENROLL_TOKEN}
+    volumes:
+      - ./config/dashboard.yaml:/etc/grepalert/dashboard.yaml:ro
+      - dashboard-data:/var/lib/grepalert-dashboard
+    ports: ["9420:9400"]
+    depends_on:
+      keycloak: { condition: service_healthy }
+
+  # One-shot: groups, role bindings and the ops webhook, via the API.
+  setup:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["sh", "/setup/setup.sh"]
+    environment:
+      GREPALERT_ROOT_PASSWORD: ${GREPALERT_ROOT_PASSWORD}
+    volumes: [./setup:/setup:ro]
+    depends_on:
+      dashboard: { condition: service_started }
+    restart: "no"
+
+  agent-db:
+    <<: *agent
+    volumes:
+      - ./config/agent-db.yaml:/etc/grepalert/agent.yaml:ro
+      - logs:/var/log/demo:ro
+      - agent-db-data:/var/lib/grepalert
+
+  agent-web:
+    <<: *agent
+    volumes:
+      - ./config/agent-web.yaml:/etc/grepalert/agent.yaml:ro
+      - logs:/var/log/demo:ro
+      - agent-web-data:/var/lib/grepalert
+
+  loggen:
+    image: alpine:3.22
+    command: ["sh", "/setup/loggen.sh"]
+    restart: unless-stopped
+    volumes:
+      - ./setup:/setup:ro
+      - logs:/var/log/demo
+
+  webhook-sink:
+    image: grepalert-webhook-sink:dev
+    build: { context: ../.., target: webhook-sink }
+    restart: unless-stopped
+    ports: ["9629:9599"]
+
+volumes:
+  keycloak-db:
+  dashboard-data:
+  agent-db-data:
+  agent-web-data:
+  logs:

@@ -1,0 +1,21 @@
+webhooks:
+  - name: sink
+    url: ${WEBHOOK_URL}/db
+    template: '{"text": {{ json .Text }}}'
+
+rules:
+  - name: db-errors
+    files: ["/var/log/demo/db.log"]
+    pattern: 'ERROR (?P<code>\w+)'
+    severity: critical
+    webhooks: [sink]
+    suppress: {window: 1m, group_by: code}
+
+  # Absence rule: the database logs a checkpoint every few seconds; if that
+  # stops for 2 minutes, something is stuck.
+  - name: db-heartbeat
+    files: ["/var/log/demo/db.log"]
+    absent: 'checkpoint complete'
+    for: 2m
+    severity: critical
+    webhooks: [sink]

@@ -1,0 +1,12 @@
+webhooks:
+  - name: sink
+    url: ${WEBHOOK_URL}/web
+    template: '{"text": {{ json .Text }}}'
+
+rules:
+  - name: http-5xx
+    files: ["/var/log/demo/web.log"]
+    pattern: '" (?P<status>5\d\d) '
+    severity: warning
+    webhooks: [sink]
+    suppress: {window: 1m, group_by: status}
