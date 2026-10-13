@@ -1,16 +1,19 @@
 # grepalert demo stack.
 #
 #   docker compose up -d --build
-#   dashboard:      http://localhost:9400   (admin / demo)
+#   dashboard:       http://localhost:9400   (admin / demo)
 #   received alerts: http://localhost:9599
 #
+# Three app servers enroll themselves and join the app-servers group, whose
+# rules come from git-repo/rules.yaml with staged rollout on. Edit that file
+# to watch a change go to 1 server, then half, then all.
 name: grepalert-demo
 
 x-agent: &agent
   build: { context: ../.., target: agent }
   image: grepalert-agent:dev
   restart: unless-stopped
-  environment:
+  environment: &agent-env
     GREPALERT_AGENT_TOKEN: ${GREPALERT_AGENT_TOKEN}
     GREPALERT_ENROLL_TOKEN: ${GREPALERT_ENROLL_TOKEN}
     WEBHOOK_URL: http://webhook-sink:9599/hook   # secrets/URLs stay out of the rules repo
@@ -27,16 +30,36 @@ services:
       - logs:/var/log/demo
     restart: unless-stopped
 
-  agent-1:
+  # App servers: connect out to the dashboard, join app-servers by label.
+  app-1:
     <<: *agent
+    environment: { <<: *agent-env, AGENT_NAME: app-server-1 }
+    # Seed this server's local rules once; after that edit them in the dashboard.
+    entrypoint: ["sh", "-c", "[ -f /var/lib/grepalert/rules.local.yaml ] || cp /seed/rules.local.yaml /var/lib/grepalert/; exec grepalert-agent -config /etc/grepalert/agent.yaml"]
     volumes:
-      - ./config/agent-1.yaml:/etc/grepalert/agent.yaml:ro
+      - ./config/app-agent.yaml:/etc/grepalert/agent.yaml:ro
       - logs:/var/log/demo:ro
-      - agent1-data:/var/lib/grepalert
+      - ./config/app-server-1.local.yaml:/seed/rules.local.yaml:ro
+      - app1-data:/var/lib/grepalert
+  app-2:
+    <<: *agent
+    environment: { <<: *agent-env, AGENT_NAME: app-server-2 }
+    volumes:
+      - ./config/app-agent.yaml:/etc/grepalert/agent.yaml:ro
+      - logs:/var/log/demo:ro
+      - app2-data:/var/lib/grepalert
+  app-3:
+    <<: *agent
+    environment: { <<: *agent-env, AGENT_NAME: app-server-3 }
+    volumes:
+      - ./config/app-agent.yaml:/etc/grepalert/agent.yaml:ro
+      - logs:/var/log/demo:ro
+      - app3-data:/var/lib/grepalert
 
+  # A "direct" agent: the dashboard connects to it (Connect agent →
+  # http://agent-2:9300). Its rules are seeded once from config/.
   agent-2:
     <<: *agent
-    # Seed the rules once; after that the dashboard owns them.
     entrypoint: ["sh", "-c", "[ -f /var/lib/grepalert/rules.yaml ] || cp /seed/rules.yaml /var/lib/grepalert/rules.yaml; exec grepalert-agent -config /etc/grepalert/agent.yaml"]
     volumes:
       - ./config/agent-2.yaml:/etc/grepalert/agent.yaml:ro
@@ -56,7 +79,18 @@ services:
       - ./config/dashboard.yaml:/etc/grepalert/dashboard.yaml:ro
       - dashboard-data:/var/lib/grepalert-dashboard
     ports: ["9400:9400"]
-    depends_on: [agent-1, agent-2, webhook-sink]
+    depends_on: [webhook-sink]
+
+  # One-shot: creates the app-servers group and the ops webhook via the API.
+  setup:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["sh", "/setup/setup.sh"]
+    environment:
+      GREPALERT_DASHBOARD_PASSWORD: ${GREPALERT_DASHBOARD_PASSWORD}
+    volumes:
+      - ./setup:/setup:ro
+    depends_on: [dashboard]
+    restart: "no"
 
   # Demo helper: shows received alerts and serves git-repo/ as a fake git remote.
   webhook-sink:
@@ -69,6 +103,8 @@ services:
 
 volumes:
   logs:
-  agent1-data:
+  app1-data:
+  app2-data:
+  app3-data:
   agent2-data:
   dashboard-data:

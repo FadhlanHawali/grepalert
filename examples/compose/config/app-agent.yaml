@@ -1,0 +1,17 @@
+# The app servers connect OUT to the dashboard: each enrolls with the token
+# below on first start and needs no inbound port. The app-servers group picks
+# them up by their labels. AGENT_NAME is set per container in compose.yaml.
+name: ${AGENT_NAME}
+dashboard:
+  url: http://dashboard:9400
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+labels:
+  role: app
+  env: demo
+listen: "127.0.0.1:9300"   # local only, for the container health check
+rules_file: /var/lib/grepalert/rules.yaml
+# Extra rules for this machine only (app-server-1 is seeded with some).
+# local_rules_file defaults to rules.local.yaml next to rules_file.
+state_file: /var/lib/grepalert/state.json
+start_from: end
+memory_limit: 32MiB

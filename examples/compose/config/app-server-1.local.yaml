@@ -1,0 +1,12 @@
+# Local rules: only app-server-1 runs these, on top of the app-servers group's
+# rules from git. They may use the group's webhooks ("sink") but cannot replace
+# its rules. Edit them in the dashboard: app-server-1 → Rules → Local rules.
+rules:
+  - name: slow-requests
+    description: Requests slower than 85 ms (only this server is being profiled)
+    files: ["/var/log/demo/app.log"]
+    pattern: 'took=(8[5-9]|9\d)ms'
+    severity: info
+    webhooks: [sink]
+    suppress:
+      window: 2m
