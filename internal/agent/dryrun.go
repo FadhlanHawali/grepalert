@@ -135,8 +135,9 @@ type DryRunFile struct {
 	// Truncated: the window held more than the scan limit, so only its
 	// newest part was replayed.
 	Truncated bool `json:"truncated,omitempty"`
-	// Estimated: the file was not watched before, so there is no position
-	// history; its tail was read and line times spread evenly over the window.
+	// Estimated: there is no position history for the file (not watched
+	// yet, or the agent just started), so its tail was read and line times
+	// spread evenly.
 	Estimated bool   `json:"estimated,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -343,9 +344,15 @@ func (a *Agent) openDryRunSource(path string, from, now time.Time) (*dryRunSourc
 	var pts []offsetSample
 	samples := a.history(path)
 	if len(samples) == 0 || samples[len(samples)-1].off > size {
-		// No usable history: read the tail and spread it over the window.
+		// No usable history (a file the rules do not watch yet, or an agent
+		// that started less than a minute ago): read the tail and spread it
+		// evenly over the window, or over the agent's uptime if shorter.
 		start = max(0, size-dryRunNoHistoryBytes)
-		pts = []offsetSample{{from.UnixNano(), start}, nowS}
+		first := from
+		if a.started.After(first) {
+			first = a.started
+		}
+		pts = []offsetSample{{first.UnixNano(), start}, nowS}
 		info.Estimated = true
 	} else {
 		k := 0

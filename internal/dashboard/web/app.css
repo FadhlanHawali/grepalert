@@ -120,4 +120,18 @@ a.button.primary { background: var(--accent); border-color: var(--accent); color
 .usermenu .who small { color: var(--muted); display: block; font-size: 11px; }
 .banner { padding: 8px 20px; font-size: 13px; background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border-bottom: 1px solid var(--border); }
 pre.diff { margin: 6px 0 0; max-height: 320px; overflow: auto; background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; }
-pre.diff .add { color: var(--ok); } pre.diff .del { color: var(--bad); }
+pre.diff .add, h3 .add { color: var(--ok); } pre.diff .del, h3 .del { color: var(--bad); }
+/* staged rollout, versions, dry run */
+.steps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.steps .step { padding: 2px 10px; border-radius: 10px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.steps .step.done { color: var(--ok); border-color: currentColor; }
+.steps .step.on { color: var(--accent); border-color: currentColor; font-weight: 600; }
+.steps .arrow { color: var(--muted); font-size: 12px; }
+.rollout { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; }
+.rollout.halted { border-color: var(--bad); }
+.rollout.running { border-color: var(--accent); }
+.rollout .row { margin-top: 4px; }
+.rollout ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+textarea.short { min-height: 160px; }
+.delta-up { color: var(--bad); font-weight: 600; } .delta-down { color: var(--ok); font-weight: 600; }
+.samples { margin: 4px 0 0; font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }

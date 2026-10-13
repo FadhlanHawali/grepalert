@@ -111,6 +111,12 @@ function offlineText(a) {
   return `<span class="badge bad">offline</span> <span class="muted">${esc(a.error)}</span>`;
 }
 
+// During a staged rollout the canaries run the new version and the others
+// the stable one; otherwise every member runs the group's version.
+const rolloutActive = g => { const ro = g.rollout_state; return !!ro && (ro.status === 'running' || ro.status === 'halted') && ro.hash === g.rules_hash; };
+const isCanary = (g, a) => rolloutActive(g) && g.rollout_state.status === 'running' && (g.canaries || []).includes(a.name);
+const expectedHash = (g, a) => !rolloutActive(g) ? g.rules_hash : isCanary(g, a) ? g.rollout_state.hash : g.rollout_state.stable_hash;
+
 // Rule state of an agent relative to its group.
 function syncState(a) {
   if (!a.group) return null;
@@ -118,7 +124,11 @@ function syncState(a) {
   if (!g || !g.rules_hash) return { cls: '', text: 'no group rules yet' };
   const res = g.state.results[a.name];
   if (!a.online) return { cls: '', text: 'offline' };
-  if (a.status.rules_hash === g.rules_hash) return { cls: 'ok', text: 'in sync' };
+  if (a.status.rules_hash === expectedHash(g, a)) {
+    if (!rolloutActive(g)) return { cls: 'ok', text: 'in sync' };
+    return isCanary(g, a) ? { cls: 'ok', text: 'new version', title: 'canary: runs ' + g.rollout_state.hash }
+      : { cls: 'ok', text: 'previous version', title: 'runs ' + g.rollout_state.stable_hash + ' until the rollout reaches it' };
+  }
   if (res && !res.ok) return { cls: 'bad', text: 'push failed', title: res.error };
   return { cls: 'warn', text: 'out of sync', title: 'will be re-pushed on the next reconcile' };
 }
@@ -193,6 +203,7 @@ function renderMain() {
   html += `<div id="agent-detail"></div>`;
   main.innerHTML = html;
   if (view.kind === 'group' && groupTab === 'rules') loadGroupRules();
+  if (view.kind === 'group' && groupTab === 'history') loadVersions();
   renderAgentDetail();
 }
 
@@ -243,34 +254,150 @@ function groupCard(g) {
       <span>Members: <b>${g.selector ? 'agents labelled ' + esc(labelsText(g.selector)) + ', plus any added by hand' : 'added by hand'}</b></span>
       ${g.source === 'git' ? `<span>Sync: <b>${g.git.interval ? 'every ' + esc(g.git.interval) : 'manual'}</b></span>` : ''}
       <span>Version: <b class="mono">${g.rules_hash ? esc(g.rules_hash) : 'none yet'}</b>${g.rules_hash ? ' · updated ' + ago(g.rules_updated_at) : ''}</span>
+      <span>Changes: <b>${g.rollout && g.rollout.enabled ? 'staged (' + esc(stagesOf(g).map(stageText).join(' → ')) + ', ' + esc(g.rollout.soak) + ' each)' : 'to every agent at once'}</b></span>
       <span>Agents in sync: <b>${inSync}/${members.length}</b></span>
       ${!zero(st.last_sync) ? `<span>Last sync: <b>${ago(st.last_sync)}</b> (${esc(st.trigger)})</span>` : ''}
     </div>
     ${silenceBanner(g.name)}
+    ${rolloutPanel(g)}
+    ${g.git_paused ? `<div class="pane" style="padding-top:0"><div class="msg info" style="margin:0">⏸ <b>Not following git:</b> ${esc(g.git_paused)}${can('editor', g.name) ? ' <button class="link" data-action="sync-group">Sync from git now</button>' : ''}</div></div>` : ''}
     ${st.last_error ? `<div class="pane" style="padding-top:0"><div class="msg bad">${esc(st.last_error)}</div></div>` : ''}
     ${!g.rules_hash && g.source === 'manual' ? `<div class="pane" style="padding-top:0"><div class="msg info">This group has no rules yet. Open the <b>Rules</b> tab to write them.</div></div>` : ''}
     <div class="tabs" data-tabs="group">
       <button data-gtab="agents" class="${groupTab === 'agents' ? 'on' : ''}">Agents (${members.length})</button>
       <button data-gtab="rules" class="${groupTab === 'rules' ? 'on' : ''}">Rules</button>
+      <button data-gtab="history" class="${groupTab === 'history' ? 'on' : ''}">History</button>
     </div>
     ${groupTab === 'agents' ? `
       ${members.length && isAdmin() ? `<div class="pane" style="padding-bottom:0"><div class="row" style="margin:0">
         <button class="primary" data-action="connect" data-group="${esc(g.name)}">Connect agent</button>
         ${data.agents.some(a => a.group !== g.name) ? `<button data-action="add-existing" data-group="${esc(g.name)}">Add an existing agent</button>` : ''}</div></div><div style="height:12px"></div>` : ''}
-      ${agentTable(members, false, g.name)}` : `
+      ${agentTable(members, false, g.name)}` : groupTab === 'history' ? `
+      <div class="pane"><div id="g-versions" class="muted">Loading…</div><div id="g-vpreview"></div></div>` : `
       <div class="pane">
         ${g.source === 'git' ? `<div class="msg info" style="margin:0 0 10px">These rules come from git and are read-only here. Change the file in the repository, then click <b>Sync from git</b>.</div>` : ''}
         <textarea id="g-editor" spellcheck="false" ${g.source === 'git' || !can('editor', g.name) ? 'readonly' : ''} placeholder="${g.source === 'git' ? 'Not synced yet' : ''}"></textarea>
         <div class="row">
           ${g.source === 'manual' && can('editor', g.name) ? `<button data-action="validate-group">Validate</button>
-            <button class="primary" data-action="save-group-rules">Save &amp; push to ${members.length} agent${members.length === 1 ? '' : 's'}</button>
+            <button class="primary" data-action="save-group-rules">${g.rollout && g.rollout.enabled && g.rules_hash ? 'Save &amp; start staged rollout' : `Save &amp; push to ${members.length} agent${members.length === 1 ? '' : 's'}`}</button>
             <button data-action="reload-group-rules">Discard changes</button>` :
             `<button data-action="preview-git">Show latest from git</button>`}
+          ${can('editor', g.name) && members.length ? `<span class="spacer"></span>
+            <select id="dr-window" style="width:auto"><option value="15m">last 15 minutes</option><option value="1h" selected>last hour</option><option value="3h">last 3 hours</option></select>
+            <button data-action="dry-run" title="Replay the agents' recent logs through ${g.source === 'git' ? 'the latest rules in git' : 'the rules in the editor'}; nothing is sent">Dry run</button>` : ''}
           <span class="muted mono" id="g-hash"></span>
         </div>
-        <div id="g-msg"></div><div id="g-preview"></div>
+        <div id="g-msg"></div><div id="g-dry"></div><div id="g-preview"></div>
       </div>`}
   </div>`;
+}
+
+// ---------- staged rollout ----------
+const DEFAULT_STAGES = ['1', '10%', '100%'];
+const stagesOf = g => (g.rollout && g.rollout.stages && g.rollout.stages.length) ? g.rollout.stages : DEFAULT_STAGES;
+const stageText = s => s === '100%' ? 'all' : s.endsWith('%') ? s : s === '1' ? '1 agent' : s + ' agents';
+const durMs = d => { const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(d || ''); return m ? m[1] * { ms: 1, s: 1e3, m: 6e4, h: 36e5 }[m[2]] : 0; };
+
+function rolloutPanel(g) {
+  const ro = g.rollout_state;
+  if (!ro) return '';
+  const live = ro.status === 'running' || ro.status === 'halted';
+  if (!live && Date.now() - new Date(ro.updated_at) > 30 * 60e3) return ''; // finished a while ago: the History tab has it
+  const stages = stagesOf(g);
+  const steps = stages.map((st, i) => {
+    const cls = ro.status === 'done' || i < ro.stage ? 'done' : i === ro.stage && ro.status === 'running' ? 'on' : '';
+    return `<span class="step ${cls}">${esc(stageText(st))}</span>`;
+  }).join('<span class="arrow">→</span>');
+  const title = { running: 'Rolling out', halted: 'Rollout stopped', done: 'Rolled out', aborted: 'Rollout aborted' }[ro.status];
+  let detail = '';
+  if (ro.status === 'running') {
+    const left = new Date(ro.stage_started).getTime() + durMs(g.rollout.soak) - Date.now();
+    detail = `${(g.canaries || []).length} of ${g.members.length} agents run <code>${esc(ro.hash)}</code> (${esc((g.canaries || []).join(', '))}), the rest stay on <code>${esc(ro.stable_hash)}</code>.
+      ${left > 90e3 ? `Next check in about ${Math.ceil(left / 60e3)} min.` : left > 0 ? `Next check in about ${Math.ceil(left / 1e3)} s.` : 'Being checked now.'}`;
+  } else if (ro.status === 'halted') {
+    detail = `Every agent is back on <code>${esc(ro.stable_hash)}</code>. ${esc(ro.reason)}`;
+  } else detail = esc(ro.reason);
+  const ed = can('editor', g.name);
+  const buttons = !ed ? '' : ro.status === 'running' ? `<button data-action="rollout" data-op="promote">Next stage now</button>
+      <button data-action="rollout" data-op="promote_all">Send to all agents now</button>
+      <button class="danger" data-action="rollout" data-op="abort">Abort and go back to ${esc(ro.stable_hash)}</button>`
+    : ro.status === 'halted' ? `<button data-action="rollout" data-op="retry">Try again</button>
+      <button class="danger" data-action="rollout" data-op="abort">Abort and go back to ${esc(ro.stable_hash)}</button>` : '';
+  return `<div class="pane" style="padding-top:0"><div class="rollout ${esc(ro.status)}">
+    <div><b>${title}</b> <code>${esc(ro.stable_hash)}</code> → <code>${esc(ro.hash)}</code>
+      <span class="muted">started ${ago(ro.started_at)}${ro.started_by ? ' by ' + esc(ro.started_by) : ''}</span></div>
+    <div class="steps">${steps}</div>
+    <div>${detail}</div>
+    ${buttons ? `<div class="row">${buttons}</div>` : ''}
+    ${(ro.log || []).length ? `<details><summary class="muted">Rollout log</summary><ul>${ro.log.slice().reverse().map(n => `<li>${new Date(n.time).toLocaleTimeString()} — ${esc(n.message)}</li>`).join('')}</ul></details>` : ''}
+  </div></div>`;
+}
+
+// ---------- versions ----------
+async function loadVersions() {
+  const el = $('#g-versions'); if (!el) return;
+  const g = groupOf(view.name);
+  try {
+    const { data: list } = await api('GET', `/api/groups/${enc(view.name)}/versions`);
+    const src = { created: 'created', edited: 'edited', git: 'from git', rollback: 'rollback', 'rollout-abort': 'rollout aborted', existing: 'before history' };
+    el.classList.remove('muted');
+    el.innerHTML = list.length ? `<p class="muted" style="margin:0 0 10px">Every change to this group's rules is kept here (the last 50). Rolling back sends a version to every agent at once${g && g.source === 'git' ? ', and the group stops following git until you sync from git again' : ''}.</p>
+      <div class="scroll"><table><thead><tr><th>Version</th><th>When</th><th>Who</th><th>How</th><th class="num">Lines</th><th></th></tr></thead><tbody>
+      ${list.map((v, i) => `<tr><td><code>${esc(v.hash)}</code> ${v.current && i === 0 ? '<span class="badge ok">current</span>' : ''}${v.stable ? ' <span class="badge">previous, still on some agents</span>' : ''}</td>
+        <td title="${esc(v.time)}">${new Date(v.time).toLocaleString()}</td><td>${esc(v.author || '—')}</td>
+        <td>${esc(src[v.source] || v.source)}${v.note ? `<div class="muted" style="font-size:12px;white-space:normal">${esc(v.note)}</div>` : ''}</td><td class="num">${v.rules}</td>
+        <td><button data-action="view-version" data-hash="${esc(v.hash)}">View</button>
+          ${!(v.current && i === 0) && can('editor', view.name) ? `<button data-action="rollback" data-hash="${esc(v.hash)}">Roll back to this</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">No versions yet.</div>';
+  } catch (e) { el.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+
+// lineDiff is a plain LCS diff, good enough for rule files.
+function lineDiff(a, b) {
+  const x = a.split('\n'), y = b.split('\n');
+  if (x.length * y.length > 4e6) return null;
+  const n = x.length, m = y.length, L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && x[i] === y[j]) { out.push('  ' + x[i]); i++; j++; }
+    else if (j < m && (i === n || L[i][j + 1] >= L[i + 1][j])) out.push('+ ' + y[j++]);
+    else out.push('- ' + x[i++]);
+  }
+  return out.join('\n');
+}
+
+// ---------- dry run ----------
+function dryRunHTML(r) {
+  const rows = r.rules.filter(x => x.current || x.candidate || x.matches);
+  const delta = (now, then) => then > now ? `<span class="delta-up">+${then - now}</span>` : then < now ? `<span class="delta-down">−${now - then}</span>` : '<span class="muted">same</span>';
+  const failed = r.agents.filter(a => !a.ok);
+  // Notes are per file; the same note from several agents is shown once.
+  const notes = new Map();
+  const note = (agent, text) => { if (!notes.has(text)) notes.set(text, []); notes.get(text).push(agent); };
+  const samples = {};
+  for (const a of r.agents.filter(a => a.ok)) {
+    const res = a.result;
+    if (res.partial) note(a.agent, 'stopped early (time limit), results are partial');
+    for (const f of res.files || []) {
+      if (f.estimated) note(a.agent, `${f.path}: no position history yet (the file is new to the agent, or the agent started less than a minute ago), so its last ${Math.round(f.bytes / 1048576) || '<1'} MB were read and line times are estimated`);
+      else if (new Date(f.from) - new Date(res.from) > 60e3) note(a.agent, `${f.path}: only the last ${Math.round((new Date(res.to) - new Date(f.from)) / 60e3)} min are covered (the agent restarted or the file rotated since)`);
+      if (f.truncated) note(a.agent, `${f.path}: more than 256 MB in the window; only the newest part was replayed`);
+      if (f.error && !/no such file|cannot find/i.test(f.error)) note(a.agent, `${f.path}: ${f.error}`);
+    }
+    for (const x of res.candidate.rules || []) for (const t of x.samples || []) {
+      (samples[x.name] ||= []).length < 3 && samples[x.name].push(`${a.agent}: ${t}`);
+    }
+  }
+  return `<h3 class="sec">Dry run: last ${esc(r.window)} on ${r.agents_ok} of ${r.agents.length} agents</h3>
+    <div class="msg ${r.candidate_alerts > r.current_alerts * 3 && r.candidate_alerts > 10 ? 'bad' : 'info'}" style="margin:0 0 10px">These rules would have sent <b>${r.candidate_alerts}</b> alert${r.candidate_alerts === 1 ? '' : 's'}; the current rules sent <b>${r.current_alerts}</b> for the same lines. Nothing was sent.</div>
+    ${rows.length ? `<div class="scroll"><table><thead><tr><th>Rule</th><th class="num">Current rules</th><th class="num">These rules</th><th class="num">Change</th><th class="num">Matching lines (all agents)</th><th class="num">Agents alerting</th></tr></thead><tbody>
+      ${rows.map(x => `<tr><td class="wrap">${esc(x.name)}${samples[x.name] ? `<details><summary class="muted">examples</summary><div class="samples mono">${samples[x.name].map(esc).join('\n')}</div></details>` : ''}</td>
+        <td class="num">${x.current}</td><td class="num">${x.candidate}</td><td class="num">${delta(x.current, x.candidate)}</td><td class="num">${x.matches}</td><td class="num">${x.agents}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="muted">No rule matched any line in this window.</div>'}
+    ${notes.size ? `<ul class="muted" style="font-size:12.5px">${[...notes].map(([n, ag]) => `<li>${esc(n)} <span title="${esc(ag.join(', '))}">(${ag.length === r.agents_ok && ag.length > 1 ? 'all agents' : esc(ag.join(', '))})</span></li>`).join('')}</ul>` : ''}
+    ${failed.length ? `<div class="msg bad">Not run on: ${failed.map(a => `${esc(a.agent)} (${esc(a.error)})`).join(', ')}</div>` : ''}`;
 }
 
 async function loadGroupRules(force) {
@@ -317,10 +444,11 @@ function tabOverview(a) {
       ${stat('Memory limit', s.memory.memory_limit > 0 && s.memory.memory_limit < 9e18 ? mb(s.memory.memory_limit) : 'none')}
       ${s.dashboard ? stat('Alerts via dashboard', s.webhooks.via_dashboard) + stat('Sent directly (fallback)', s.webhooks.fallback) : ''}${stat('Alerts sent', s.webhooks.sent)}${stat('Webhook queue', s.webhooks.queued)}${stat('Suppression keys', s.suppress_keys)}
     </div>
-    <div class="muted">Rules <code>${esc(s.rules_hash)}</code> loaded ${ago(s.rules_loaded_at)} from <b>${esc(s.rules_origin || '—')}</b></div>
+    <div class="muted">Rules <code>${esc(s.rules_hash)}</code> loaded ${ago(s.rules_loaded_at)} from <b>${esc(s.rules_origin || '—')}</b>${s.local_rules_hash ? (s.local_rules_error
+      ? ` · <span class="badge bad" title="${esc(s.local_rules_error)}">local rules rejected</span>` : ` · plus ${s.local_rules} local rule${s.local_rules === 1 ? '' : 's'} <code>${esc(s.local_rules_hash)}</code>`) : ''}</div>
     <h3 class="sec">Rules</h3>
     <div class="scroll"><table><thead><tr><th>Rule</th><th>Pattern</th><th>Suppression</th><th class="num">Matches</th><th class="num">Alerts</th><th class="num">Suppressed</th><th>Last match</th></tr></thead><tbody>
-    ${(s.rules || []).map(r => `<tr><td>${esc(r.name)}</td><td class="wrap">${r.absent ? `<span class="badge ${r.firing ? 'bad' : 'ok'}">${r.firing ? 'missing' : 'seen'}</span> absent <code>${esc(r.absent)}</code> for ${esc(r.for)}` : `<code>${esc(r.pattern)}</code>`}</td><td>${esc(r.suppress || (r.absent ? 'once, then on recovery' : 'off'))}</td>
+    ${(s.rules || []).map(r => `<tr><td>${esc(r.name)}${r.local ? ' <span class="badge" title="from this machine\'s local rules">local</span>' : ''}</td><td class="wrap">${r.absent ? `<span class="badge ${r.firing ? 'bad' : 'ok'}">${r.firing ? 'missing' : 'seen'}</span> absent <code>${esc(r.absent)}</code> for ${esc(r.for)}` : `<code>${esc(r.pattern)}</code>`}</td><td>${esc(r.suppress || (r.absent ? 'once, then on recovery' : 'off'))}</td>
       <td class="num">${r.matches}</td><td class="num">${r.alerts}</td><td class="num">${r.suppressed}</td><td>${ago(r.last_match)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No active rules</td></tr>'}
     </tbody></table></div>
     <h3 class="sec">Tailed files</h3>
@@ -338,8 +466,26 @@ async function tabRules(a) {
     <textarea id="a-editor" spellcheck="false" ${managed ? 'readonly' : ''}></textarea>
     <div class="row">${managed ? `<button data-nav="group" data-name="${esc(a.group)}">Open group ${esc(a.group)}</button>` : `
       <button data-action="validate-agent">Validate</button><button class="primary" data-action="save-agent-rules">Save &amp; apply</button>
-      <button data-action="reload-agent-rules">Discard changes</button>`}<span class="muted mono" id="a-hash"></span></div><div id="a-msg"></div>`;
+      <button data-action="reload-agent-rules">Discard changes</button>`}<span class="muted mono" id="a-hash"></span></div><div id="a-msg"></div>
+    <h3 class="sec">Local rules <span class="muted" style="font-weight:normal">— this machine only</span></h3>
+    <p class="muted" style="margin:0 0 8px">Extra rules for ${esc(a.name)} on top of ${a.group ? `group ${esc(a.group)}'s rules` : 'the rules above'}: for example a file only this server has.
+      They can use the ${a.group ? "group's " : ''}webhooks, but can only add rules, never replace them. Kept on the agent in <code>rules.local.yaml</code>.</p>
+    <textarea id="l-editor" class="short" spellcheck="false" ${can('editor', a.group || '') ? '' : 'readonly'} placeholder="rules:\n  - name: billing-batch\n    files: [/var/log/billing/batch.log]\n    pattern: FAILED\n    webhooks: [alerts]"></textarea>
+    ${can('editor', a.group || '') ? `<div class="row"><button class="primary" data-action="save-local-rules">Save local rules</button>
+      <button data-action="clear-local-rules">Remove local rules</button><span class="muted mono" id="l-hash"></span></div>` : ''}<div id="l-msg"></div>`;
   loadAgentRules(true);
+  loadLocalRules();
+}
+
+async function loadLocalRules() {
+  try {
+    const { data: r } = await api('GET', `/api/agents/${enc(selAgent)}/local-rules`);
+    const ed = $('#l-editor'); if (!ed) return;
+    if (!r.enabled) { ed.value = ''; ed.readOnly = true; $('#l-msg').innerHTML = '<div class="msg info">Local rules are turned off on this agent (<code>local_rules_file: off</code>).</div>'; return; }
+    ed.value = r.rules || '';
+    if ($('#l-hash')) $('#l-hash').textContent = r.rules ? 'version ' + r.hash : '';
+    $('#l-msg').innerHTML = r.rejected ? `<div class="msg bad">Not running: ${esc(r.rejected)}</div>` : '';
+  } catch (e) { $('#l-msg').innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
 }
 
 async function loadAgentRules(force) {
@@ -654,7 +800,9 @@ async function refresh() {
   if (document.querySelector('dialog[open]') || formPage) { renderNav(); return; }
   // Keep focus/scroll and unsaved edits stable: re-render only if not editing.
   const editing = editorDirty || document.activeElement?.matches('textarea, input');
-  if (editing) { renderNav(); return; }
+  // Results the user is reading (a dry run, a version diff) stay until they act.
+  const reading = view.kind === 'group' && ($('#g-dry')?.childElementCount || $('#g-vpreview')?.childElementCount || $('#g-preview')?.childElementCount);
+  if (editing || reading) { renderNav(); return; }
   render();
 }
 
@@ -743,6 +891,12 @@ function openGroupDialog(group) {
     if (group.fleet && group.fleet.wait) f.fleet_wait.value = group.fleet.wait;
     if (group.fleet && group.fleet.window) f.fleet_window.value = group.fleet.window;
     f.ops_webhook.value = group.ops_webhook_url || '';
+    const ro = group.rollout || {};
+    f.rollout_on.checked = !!ro.enabled;
+    f.ro_stages.value = (ro.stages || []).join(', ');
+    if (ro.soak) { if (![...f.ro_soak.options].some(o => o.value === ro.soak)) f.ro_soak.add(new Option(ro.soak, ro.soak)); f.ro_soak.value = ro.soak; }
+    if (ro.max_increase) { if (![...f.ro_max.options].some(o => o.value === String(ro.max_increase))) f.ro_max.add(new Option(ro.max_increase + '×', ro.max_increase)); f.ro_max.value = String(ro.max_increase); }
+    if (ro.min_alerts) f.ro_min.value = ro.min_alerts;
     f.source.value = group.source;
     if (group.git) {
       f.provider.value = group.git.provider; f.repo.value = group.git.repo || ''; f.ref.value = group.git.ref || '';
@@ -758,6 +912,7 @@ function openGroupDialog(group) {
 function groupFormVisibility() {
   const f = $('#f-group'), git = f.source.value === 'git', url = f.provider.value === 'url';
   $('#fg-git').hidden = !git;
+  $('#fg-rollout').hidden = !f.rollout_on.checked;
   $('#fg-manual').hidden = git || !!editingGroup;
   document.querySelectorAll('#f-group [data-git=repo]').forEach(e => e.hidden = url);
   document.querySelectorAll('#f-group [data-git=url]').forEach(e => e.hidden = !url);
@@ -768,6 +923,9 @@ async function saveGroup() {
   const body = { name: f.name.value.trim(), description: f.description.value.trim(), source: f.source.value };
   body.fleet = { disabled: !f.fleet_on.checked, wait: f.fleet_wait.value, window: f.fleet_window.value };
   body.ops_webhook_url = f.ops_webhook.value.trim();
+  body.rollout = { enabled: f.rollout_on.checked, stages: f.ro_stages.value.split(',').map(x => x.trim()).filter(Boolean),
+    soak: f.ro_soak.value, max_increase: Number(f.ro_max.value), min_alerts: parseInt(f.ro_min.value, 10) || 0 };
+  if (!body.rollout.enabled) body.rollout = { enabled: false };
   try { body.selector = parseLabels(f.selector.value); }
   catch (e) { msg.innerHTML = `<div class="msg bad">Labels: ${esc(e.message)}</div>`; f.selector.focus(); return; }
   if (!body.name) { f.name.focus(); return; }
@@ -956,11 +1114,62 @@ document.addEventListener('click', async e => {
       catch (err) { $('#g-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
     case 'save-group-rules':
       try { const { data: r } = await api('PUT', `/api/groups/${enc(g.name)}/rules`, $('#g-editor').value, 'application/yaml');
-        editorDirty = false;
+        editorDirty = false; $('#g-dry').innerHTML = $('#g-preview').innerHTML = '';
         await refresh(); // re-renders the tab, so show the result after it
-        $('#g-msg').innerHTML = `<div class="msg ok">Saved version ${esc(r.hash)} (${r.rules} active rules), applied without restarting:\n${esc(pushSummary(r.state))}</div>`; }
+        const ro = r.rollout;
+        $('#g-msg').innerHTML = ro && ro.status === 'running' && ro.hash === r.hash
+          ? `<div class="msg ok">Saved version ${esc(r.hash)} (${r.rules} active rules). Staged rollout started: ${esc(stageText(stagesOf(g)[0]))} first; the others stay on ${esc(ro.stable_hash)} for now.\n${esc(pushSummary(r.state))}</div>`
+          : `<div class="msg ok">Saved version ${esc(r.hash)} (${r.rules} active rules), applied without restarting:\n${esc(pushSummary(r.state))}</div>`; }
       catch (err) { $('#g-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
     case 'reload-group-rules': $('#g-msg').innerHTML = ''; return loadGroupRules(true);
+    case 'dry-run': {
+      let text = $('#g-editor').value;
+      t.disabled = true; $('#g-dry').innerHTML = '<div class="msg info">Replaying the agents\' logs…</div>';
+      try {
+        if (g.source === 'git') text = (await api('GET', `/api/groups/${enc(g.name)}/preview`)).data;
+        const { data: r } = await api('POST', `/api/groups/${enc(g.name)}/dryrun?window=${enc($('#dr-window').value)}`, text, 'application/yaml');
+        $('#g-dry').innerHTML = dryRunHTML(r);
+      } catch (err) { $('#g-dry').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; }
+      finally { t.disabled = false; }
+      return;
+    }
+    case 'rollout': {
+      const op = t.dataset.op, ro = g.rollout_state;
+      const ask = { promote: 'Move the rollout to its next stage now?', promote_all: `Send ${ro.hash} to every agent now?`,
+        retry: 'Start the rollout again from the first stage, with other canaries?',
+        abort: `Abort the rollout? The group's rules go back to ${ro.stable_hash} on every agent${g.source === 'git' ? ', and the group stops following git until you sync from git again' : ''}.` }[op];
+      if (!confirm(ask)) return;
+      try { await api('POST', `/api/groups/${enc(g.name)}/rollout`, { action: op }); toast({ promote: 'Moved to the next stage', promote_all: 'Sent to every agent', retry: 'Rollout restarted', abort: 'Rollout aborted' }[op]); }
+      catch (err) { toast(err.message, true); }
+      editorDirty = false; await refresh(); return render();
+    }
+    case 'view-version':
+      try {
+        const [{ data: text }, { data: cur }] = await Promise.all([api('GET', `/api/groups/${enc(g.name)}/versions/${enc(t.dataset.hash)}`), api('GET', `/api/groups/${enc(g.name)}/rules`)]);
+        const d = t.dataset.hash === g.rules_hash ? null : lineDiff(cur, text);
+        $('#g-vpreview').innerHTML = `<h3 class="sec">Version ${esc(t.dataset.hash)}${d ? ' — what rolling back to it would change (<span class="del">−</span> removed, <span class="add">+</span> added)' : ''}</h3>
+          ${d ? `<pre class="diff mono">${diffHTML(d)}</pre><details><summary class="muted">full text</summary><pre class="preview mono">${esc(text)}</pre></details>` : `<pre class="preview mono">${esc(text)}</pre>`}`;
+        $('#g-vpreview').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) { $('#g-vpreview').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; }
+      return;
+    case 'rollback':
+      if (!confirm(`Roll back group ${g.name} to version ${t.dataset.hash}? It goes to every agent at once${rolloutActive(g) ? ' and stops the rollout in progress' : ''}${g.source === 'git' ? '. The group stops following git until you sync from git again' : ''}.`)) return;
+      try { const { data: r } = await api('POST', `/api/groups/${enc(g.name)}/rollback`, { hash: t.dataset.hash }); toast(`Rolled back to ${t.dataset.hash}: ` + pushSummary(r.state).replace(/\n/g, ' · ')); }
+      catch (err) { toast(err.message, true); }
+      await refresh(); return render();
+    case 'save-local-rules':
+    case 'clear-local-rules': {
+      const clear = t.dataset.action === 'clear-local-rules';
+      if (clear && !confirm(`Remove ${a.name}'s local rules? Only the ${a.group ? "group's " : ''}rules will run.`)) return;
+      try {
+        const { data: r } = await api('PUT', `/api/agents/${enc(a.name)}/local-rules`, clear ? '' : $('#l-editor').value, 'application/yaml');
+        editorDirty = false;
+        await refresh();
+        await loadLocalRules();
+        $('#l-msg').innerHTML = `<div class="msg ok">${clear ? 'Local rules removed.' : `Applied: ${r.rules} local rule${r.rules === 1 ? '' : 's'} on top of the ${a.group ? "group's" : 'agent\'s'} rules.`}</div>`;
+      } catch (err) { $('#l-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; }
+      return;
+    }
     case 'preview-git':
       try { const { data: text, headers } = await api('GET', `/api/groups/${enc(g.name)}/preview`);
         const same = headers.get('X-Rules-Hash') === g.rules_hash;
@@ -983,7 +1192,7 @@ document.addEventListener('click', async e => {
       catch (err) { $('#t-msg').innerHTML = `<div class="msg bad">${esc(err.message)}</div>`; } return;
   }
 });
-document.addEventListener('input', e => { if (e.target.matches('#g-editor, #a-editor')) editorDirty = true; });
+document.addEventListener('input', e => { if (e.target.matches('#g-editor, #a-editor, #l-editor')) editorDirty = true; });
 document.addEventListener('keydown', e => {
   if (e.key === 'Tab' && e.target.matches('textarea:not([readonly])')) {
     e.preventDefault(); const t = e.target; t.setRangeText('  ', t.selectionStart, t.selectionEnd, 'end'); editorDirty = true;
@@ -995,7 +1204,7 @@ document.addEventListener('input', e => {
   if (e.target.id === 'au-q') { clearTimeout(auditTimer); auditTimer = setTimeout(() => { auditFilter = e.target.value; renderAudit(); }, 300); }
 });
 document.addEventListener('change', e => { if (e.target.id === 'al-group') { alertsGroup = e.target.value; renderAlerts(); } });
-$('#f-group').addEventListener('change', e => { if (e.target.name === 'source' || e.target.name === 'provider') groupFormVisibility(); });
+$('#f-group').addEventListener('change', e => { if (['source', 'provider', 'rollout_on'].includes(e.target.name)) groupFormVisibility(); });
 window.addEventListener('hashchange', () => { view = parseHash(); render(); });
 
 loadMe().then(ok => {

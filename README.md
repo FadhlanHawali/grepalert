@@ -128,6 +128,33 @@ To check a rules file before shipping it (for example in CI on your rules repo):
 grepalert-agent -check rules.yaml
 ```
 
+## Safe rule rollout
+
+A bad rule can page everyone at once, or quietly match nothing. Four tools in the dashboard help prevent both.
+
+**Versions and one-click rollback.** Every change to a group's rules is saved as a version: edits, git syncs, rollbacks and aborted rollouts.
+- The group's **History** tab shows each version with who made it and how. **View** shows what rolling back to it would change.
+- **Roll back to this** sends that version to every agent at once. It skips staged rollout, because a rollback is for when something is already wrong.
+- For a git group, a rollback also pauses following git. Otherwise the next fetch would bring the bad version back. **Sync from git** resumes it.
+- The last 50 versions are kept per group, plus any version an agent still runs.
+
+**Staged rollout.** Turn it on in the group's settings (**Edit → Rule changes**). A rule change then reaches the group in stages: by default 1 agent, then 10%, then everyone.
+- **Watching a stage.** Each stage is watched for a while (5 minutes by default). The dashboard compares the alerts per agent on the new version with the agents still on the previous version.
+- **Automatic stop.** The rollout stops if the new version raises more than 3× the alerts, with at least 10 alerts so a few stray matches don't count. It also stops if an agent refuses the new rules (for example an unset `${VAR}`). Every agent then goes back to the previous version, and the agent-down webhook gets a `rollout` alert.
+- **Manual control.** Editors can move to the next stage now, send to everyone now, try again with other first agents, or abort and go back.
+- **What the group page shows.** The page shows the stage, which agents run which version, and a log of every decision. The agent list marks each agent with *new version* or *previous version*.
+- **Choice of first agents.** They are picked by a hash of the rollout and the agent name, so each rollout starts somewhere different.
+
+**Dry run.** In a group's Rules tab, **Dry run** replays the last 15 minutes, hour or 3 hours of every member's logs. It uses the rules in the editor, or for a git group the latest rules in git. Nothing is sent.
+- **What you see.** For each rule: how many alerts it would have sent, next to what the current rules sent for the same lines, with example alerts. For example, *"These rules would have sent 340 alerts; the current rules sent 12."*
+- **Accurate timing.** Suppression windows, `group_by`, and absence rules are simulated with each line's time. The agent knows those times because it records where each file was once a minute; this costs a fixed ~3 KB per file.
+- **Bounded cost.** Lines are streamed, at most 256 MB per file is replayed, and one dry run runs at a time per agent. Files with no history yet (new to the agent, or the agent just started) are read from their last 16 MB, and the results say their times are estimated.
+
+**Local rules (per-VM overlay).** A machine can have extra rules on top of its group's rules, for example for a file only that server has.
+- **Where they live.** They are kept on the agent in `local_rules_file` (default `rules.local.yaml` next to `rules_file`). Edit them in the agent's **Rules** tab, or on disk.
+- **Add only.** Local rules can use the group's webhooks but can only add rules. A local rule with the same name as a group rule is refused. If the group later adds a rule with that name, the group wins and the agent reports the local rules as rejected.
+- **No effect on sync.** Local rules don't change the group version the agent reports, so the agent stays in sync.
+
 ## Sign-in, roles and audit log
 
 **Signing in.** Choose any combination of these in `dashboard.yaml`:
@@ -161,7 +188,7 @@ auth:
 | Role | Can |
 |---|---|
 | **viewer** | See the groups and agents in scope: status, rules, events, alert history, silences |
-| **editor** | Also edit and sync those groups' rules, push them to agents, and create or end silences |
+| **editor** | Also edit and sync those groups' rules, dry-run them, roll back, steer staged rollouts, edit their agents' local rules, push to agents, and create or end silences |
 | **admin** | Everything, always for all groups: agents, groups, enrollment, settings, users and access, audit log |
 
 For example, *group:db-team → editor on group db* lets the database team manage their own alert rules and see nothing else. Users see only what their roles cover, and every API call is checked on the server; the UI hiding a button is just a convenience. Role changes apply on the next request; nobody needs to sign in again.
@@ -172,19 +199,43 @@ For example, *group:db-team → editor on group db* lets the database team manag
 - **Storage:** an append-only JSON-lines file (`audit_file`, default `audit.log` next to the data file, mode `0600`). It rotates at 20 MB, keeping 5 old files.
 - **Viewing:** admins can browse and filter it under **Audit log**, or download it with **Export** for a SIEM.
 
-**Try SSO locally** with Keycloak and three test users. [examples/sso](examples/sso/compose.yaml) has the realm and the dashboard config:
+**Signing out** of an SSO session also ends the session at the identity provider (OpenID Connect RP-initiated logout), so the next person at the browser has to sign in again.
 
-```bash
-cd examples/sso && docker compose up -d     # Keycloak on http://localhost:8180
-GREPALERT_ROOT_PASSWORD=change-me-please go run ../../cmd/grepalert-dashboard -config dashboard.yaml
+**When the dashboard reaches the identity provider by another address** than browsers do, set `discovery_url`. This is common in Docker or Kubernetes: browsers use the public `issuer`, and the dashboard fetches keys and tokens through the internal address.
+
+```yaml
+  oidc:
+    issuer: https://sso.example.com/realms/ops         # what browsers use; must match the tokens' "iss"
+    discovery_url: http://keycloak:8080/realms/ops     # where the dashboard fetches the discovery document
 ```
 
-Then open http://localhost:9420.
-- `alice` is in Keycloak group `db-team`. Grant *group:db-team → editor on db* to give her that group.
-- `bob` signs in but sees nothing until he is given a role.
-- `ops-admin` is in `grepalert-admins`, which `admins:` makes an admin.
+**Try SSO with Keycloak.** [examples/sso](examples/sso/compose.yaml) runs a complete stack:
+- Keycloak with Postgres and an imported realm (users, groups, the dashboard's client)
+- the dashboard
+- two agents that enroll themselves and join their groups by label
+- a log generator
+- a webhook sink
 
-Signing out of the dashboard does not sign you out of the identity provider.
+A setup job creates the groups and role bindings.
+
+```bash
+cd examples/sso && docker compose up -d --build
+```
+
+| URL | What |
+|---|---|
+| http://localhost:9420 | dashboard: **Sign in with Keycloak** |
+| http://localhost:8180 | Keycloak admin console (`admin` / `KEYCLOAK_ADMIN_PASSWORD` from `.env`) |
+| http://localhost:9629 | alerts received by the webhook sink |
+
+The demo users' passwords are in [`examples/sso/.env`](examples/sso/.env); they are generated test values for localhost only.
+
+| User | Keycloak group | What they get |
+|---|---|---|
+| `ops-admin` | `grepalert-admins` | admin (through `admins: ["group:grepalert-admins"]`), including the audit log |
+| `alice` | `db-team` | editor of group **db**; sees only `db-01` |
+| `carol` | `web-team` | editor of **web**, plus viewer of **db** (a binding for her user) |
+| `bob` | none | signs in, sees "No access yet" until someone grants a role |
 
 ## Fleet-level alerting
 
@@ -273,10 +324,11 @@ Every route below validates the new rules first. If validation fails, the agent 
 
 1. **Edit the file.** The agent checks `rules_file` every `rescan_interval` (10s by default).
 2. **Dashboard, ungrouped agent.** Open the agent's Rules tab, edit, then click Validate and Save & apply.
-3. **Dashboard, group.** Edit the group's rules, or change them in git and sync. The change is pushed to every member, and members that drift are corrected automatically.
+3. **Dashboard, group.** Edit the group's rules, or change them in git and sync. The change is pushed to every member, all at once or in stages ([Safe rule rollout](#safe-rule-rollout)). Members that drift are corrected automatically.
+4. **API**: `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @rules.yaml http://agent:9300/api/v1/rules`
+5. **Local rules** in `local_rules_file` (or `PUT /api/v1/rules/local`) add rules for one machine on top of whatever routes 1-4 set.
 
 Agents write pushed rules to their `rules_file`, so the rules survive a restart.
-4. **API**: `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @rules.yaml http://agent:9300/api/v1/rules`
 
 Tailers for files that are no longer referenced are stopped. Tailers for new files are started. Files that keep the same rules are not reopened, and their suppression windows carry on.
 
@@ -388,6 +440,9 @@ Delivery is at-least-once. After a crash, lines read since the last save (at mos
 | `GET /api/v1/rules` | The active rules YAML. The `X-Rules-Hash` header identifies the version. |
 | `PUT /api/v1/rules` | Validate, persist and apply new rules. |
 | `POST /api/v1/rules/validate` | Validate rules without applying them. |
+| `POST /api/v1/rules/dryrun?window=1h` | Replay the last `window` (up to 3h) of the logs through the posted rules and the current ones; returns per-rule alert counts and examples. Nothing is sent. |
+| `GET /api/v1/rules/local` | This machine's local rules (JSON: `rules`, `hash`, `rejected`). |
+| `PUT /api/v1/rules/local` | Replace the local rules (validated against the current rules); an empty body removes them. |
 | `GET /api/v1/events?limit=N` | Recent alerts, rule changes and errors. |
 | `POST /api/v1/test` | `{"line": "..."}`: lists which rules would match that line. |
 

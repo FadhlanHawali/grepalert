@@ -109,15 +109,15 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []versionView{}
-	seenCurrent := false
+	seenCurrent, seenStable := false, false
 	for _, v := range s.store.Versions(name) {
 		vv := versionView{Hash: v.Hash, Time: v.Time, Author: v.Author, Source: v.Source, Note: v.Note,
 			Rules: strings.Count(v.Rules, "\n")}
 		if v.Hash == g.RulesHash && !seenCurrent {
 			vv.Current, seenCurrent = true, true
 		}
-		if ro := g.RolloutState; ro != nil && ro.active() && v.Hash == ro.StableHash {
-			vv.Stable = true
+		if ro := g.RolloutState; ro != nil && ro.active() && v.Hash == ro.StableHash && !seenStable {
+			vv.Stable, seenStable = true, true
 		}
 		out = append(out, vv)
 	}
@@ -162,7 +162,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := authOf(r).id.User
-	note := fmt.Sprintf("rolled back from %s to %s (of %s)", orNone(g.RulesHash), v.Hash, fmtTime(v.Time))
+	note := fmt.Sprintf("rolled back from %s to %s", orNone(g.RulesHash), v.Hash)
 	err := s.store.SetGroupRules(name, []byte(v.Rules), RuleVersion{Author: actor, Source: "rollback", Note: note}, func(g *GroupRecord) {
 		if ro := g.RolloutState; ro != nil && ro.active() {
 			ro.finish("aborted", "rolled back to "+v.Hash+" by "+actor)

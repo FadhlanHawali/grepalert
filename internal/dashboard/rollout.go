@@ -364,17 +364,19 @@ func (s *Server) evaluateRollout(ctx context.Context, name string) {
 	} else {
 		baseline = ro.BaselineRate
 	}
-	verdict := fmt.Sprintf("%d canaries raised %d alerts in %s", nCan, canAlerts, elapsed.Round(time.Second))
+	verdict := fmt.Sprintf("%s raised %d alerts in %s", plural(nCan, "agent on the new version", "agents on the new version"), canAlerts, elapsed.Round(time.Second))
 	if nCan > 0 && baseline != nil && canAlerts >= uint64(g.Rollout.MinAlerts) {
 		rate := float64(canAlerts) / float64(nCan) / minutes
 		if rate > g.Rollout.MaxIncrease**baseline {
-			s.haltRollout(ctx, name, ro.ID, fmt.Sprintf("alert spike: canaries raised %.2f alerts per agent per minute, stable agents %.2f (limit %.1f×); %s",
+			s.haltRollout(ctx, name, ro.ID, fmt.Sprintf("alert spike: the new version raised %.2f alerts per agent per minute, the previous one %.2f (limit %g×); %s",
 				rate, *baseline, g.Rollout.MaxIncrease, verdict))
 			return
 		}
 	}
-	if baseline != nil {
-		verdict += fmt.Sprintf(" (stable agents: %.2f per agent per minute)", *baseline)
+	if nSt > 0 {
+		verdict += fmt.Sprintf(" (the others: %.2f per agent per minute)", *baseline)
+	} else if baseline != nil {
+		verdict += fmt.Sprintf(" (the previous version ran at %.2f per agent per minute in the stage before)", *baseline)
 	} else {
 		verdict += " (no stable agents to compare with)"
 	}
@@ -722,4 +724,11 @@ func (s *Server) handlePutLocalRules(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

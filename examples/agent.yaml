@@ -20,6 +20,11 @@ token: ${GREPALERT_AGENT_TOKEN} # the dashboard sends this as a Bearer token
 # overwritten when the dashboard pushes new rules.
 rules_file: rules.yaml
 
+# Extra rules for this machine only, on top of rules_file (which a dashboard
+# group may manage). They can add rules but never replace the group's.
+# Default: rules.local.yaml next to rules_file. "off" disables.
+# local_rules_file: /var/lib/grepalert/rules.local.yaml
+
 # Read positions are saved here so a restart (or crash) resumes where the agent
 # stopped. Default: grepalert.state.json next to rules_file. "off" disables.
 # state_file: /var/lib/grepalert/state.json
