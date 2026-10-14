@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.1.0 to publish:
+# Write the release's highlights in docs/releases/<tag>.md before tagging;
+# they open the release text. Then push a tag like v0.1.0 to publish:
 #   - a GitHub Release with archives of both binaries for Linux, macOS and
 #     Windows (amd64/arm64), plus checksums.txt
 #   - container images ghcr.io/<owner>/grepalert-agent and
@@ -41,31 +42,42 @@ jobs:
       - name: Build archives
         run: VERSION="${GITHUB_REF_NAME#v}" SKIP_UI=1 scripts/release.sh
 
-      - name: Release notes from CHANGELOG.md
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          # The section of this version: from its heading to the next one.
-          awk -v v="$version" '
-            /^## / { if (found) exit; if (index($0, "[" v "]") || index($0, " " v)) { found = 1; next } }
-            found' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then echo "Release $GITHUB_REF_NAME" > notes.md; fi
-          cat >> notes.md <<NOTES
-
-          ### Container images
-
-          \`\`\`
-          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grepalert-agent:${version}
-          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grepalert-dashboard:${version}
-          \`\`\`
-          NOTES
-
-      - name: Publish the release
+      # The release text: docs/releases/<tag>.md (the highlights), then how to
+      # get it. GitHub appends the generated list of changes.
+      - name: Write release notes
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --title "grepalert ${GITHUB_REF_NAME#v}" --notes-file notes.md $prerelease
+          set -euo pipefail
+          version="${TAG#v}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            if [ -f "docs/releases/$TAG.md" ]; then
+              cat "docs/releases/$TAG.md"
+              echo
+            else
+              echo "::warning::docs/releases/$TAG.md is missing; the release has only the generated notes" >&2
+            fi
+            echo "## Downloads"
+            echo
+            echo "**Containers** (linux/amd64, linux/arm64):"
+            echo
+            echo '```bash'
+            echo "docker pull ghcr.io/$owner/grepalert-agent:$version"
+            echo "docker pull ghcr.io/$owner/grepalert-dashboard:$version"
+            echo '```'
+            echo
+            echo "**Binaries** for Linux, macOS and Windows are attached below, each archive with both programs and example configs (\`checksums.txt\` has their SHA-256)."
+          } > release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: grepalert ${{ github.ref_name }}
+          body_path: release-notes.md
+          generate_release_notes: true
+          # v0.2.0-rc.1 and similar are marked as pre-releases
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist/*
 
   images:
     runs-on: ubuntu-latest

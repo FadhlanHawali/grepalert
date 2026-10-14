@@ -133,8 +133,8 @@ Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselv
 | [Memory and performance](docs/performance.md) | Why the agent's memory stays flat, multi-GB logs, many files, load testing |
 | [Agent API](docs/api.md) | The agent's HTTP API |
 | [Development](docs/development.md) | Code layout, building, working on the web UI |
-| [Releasing](docs/releasing.md) | How a release is cut: binaries, container images, changelog |
-| [Changelog](CHANGELOG.md) | What changed in each version |
+| [Releasing](docs/releasing.md) | How a release is cut: release notes, binaries, container images |
+| [Release notes](docs/releases/) | What each version brings, one file per release |
 
 ## License
 

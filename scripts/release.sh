@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the release archives into dist/: both binaries for every platform,
-# with the README, changelog, license and example configs, plus checksums.
+# with the README, release notes, license and example configs, plus checksums.
 #
 #   VERSION=0.1.0 scripts/release.sh          # defaults to `git describe`
 #   TARGETS="linux/amd64" SKIP_UI=1 scripts/release.sh
@@ -37,7 +37,8 @@ for target in $TARGETS; do
     CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$LDFLAGS" -o "$dir/$cmd$ext" "./cmd/$cmd"
   done
   cp README.md "$dir/"
-  for f in CHANGELOG.md LICENSE; do [ -f "$f" ] && cp "$f" "$dir/"; done
+  [ -f LICENSE ] && cp LICENSE "$dir/"
+  [ -f "docs/releases/v$VERSION.md" ] && cp "docs/releases/v$VERSION.md" "$dir/RELEASE_NOTES.md"
   cp examples/agent.yaml examples/rules.yaml examples/dashboard.yaml examples/grepalert-agent.service "$dir/examples/"
   chmod +x "$dir"/grepalert-*
   if [ "$os" = windows ]; then archive_zip "$name"; else tar -C dist -czf "dist/$name.tar.gz" "$name"; fi
