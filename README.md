@@ -2,6 +2,8 @@
 
 Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a webhook.
 
+![How grepalert works: rules go from git through the dashboard to every agent; an agent matches a log line, pulls values out of it and sends your message to a webhook; the same alert from many servers becomes one; repeats are suppressed](docs/assets/how-it-works.gif)
+
 grepalert is for when Loki + Promtail + Grafana is more setup than the problem needs. It is two static Go binaries with no database and no queue:
 
 | Binary | Runs on | Job |
