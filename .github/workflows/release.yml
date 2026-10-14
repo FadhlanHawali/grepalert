@@ -1,0 +1,110 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish:
+#   - a GitHub Release with archives of both binaries for Linux, macOS and
+#     Windows (amd64/arm64), plus checksums.txt
+#   - container images ghcr.io/<owner>/grepalert-agent and
+#     ghcr.io/<owner>/grepalert-dashboard for linux/amd64 and linux/arm64
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tests
+        run: |
+          (cd ui && npm ci --no-audit --no-fund && npm run build)
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: Build archives
+        run: VERSION="${GITHUB_REF_NAME#v}" SKIP_UI=1 scripts/release.sh
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The section of this version: from its heading to the next one.
+          awk -v v="$version" '
+            /^## / { if (found) exit; if (index($0, "[" v "]") || index($0, " " v)) { found = 1; next } }
+            found' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "Release $GITHUB_REF_NAME" > notes.md; fi
+          cat >> notes.md <<NOTES
+
+          ### Container images
+
+          \`\`\`
+          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grepalert-agent:${version}
+          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/grepalert-dashboard:${version}
+          \`\`\`
+          NOTES
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --title "grepalert ${GITHUB_REF_NAME#v}" --notes-file notes.md $prerelease
+
+  images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    strategy:
+      matrix:
+        target: [agent, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/grepalert-${{ matrix.target }}
+          # 0.1.0, 0.1, and latest (except for pre-releases like 0.2.0-rc.1)
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=grepalert-${{ matrix.target }}
+            org.opencontainers.image.description=grepalert ${{ matrix.target }}: log-based alerting without the stack
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}

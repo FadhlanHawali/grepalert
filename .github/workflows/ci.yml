@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the web UI (type-checked)
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal examples)
+          if [ -n "$unformatted" ]; then echo "not gofmt'ed:"; echo "$unformatted"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Tests
+        run: go test -count=1 ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # The images must keep building for both architectures.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build agent and dashboard images (linux/amd64, linux/arm64)
+        run: |
+          for target in agent dashboard; do
+            docker buildx build --platform linux/amd64,linux/arm64 --target "$target" \
+              --cache-from type=gha,scope=$target --cache-to type=gha,mode=max,scope=$target .
+          done

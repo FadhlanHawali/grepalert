@@ -38,13 +38,46 @@ It is two static Go binaries with no database and no queue:
 
 ![The dashboard goes down: the agent keeps running from its disk and, after 15 seconds, alerts the webhook directly while silenced rules stay silent; the agent restarts during the outage, resumes from its saved position so a line written meanwhile still alerts; the dashboard comes back and the agent reconnects on its own](docs/assets/dashboard-down.gif)
 
-## Quick start
+## Install
+
+**Binaries.** Download an archive for Linux, macOS or Windows (amd64/arm64) from [Releases](https://github.com/FadhlanHawali/grepalert/releases). Each archive holds both programs plus example configs:
 
 ```bash
-make build            # builds the web UI (needs Node.js 20+) and both binaries into bin/
+curl -fsSLO https://github.com/FadhlanHawali/grepalert/releases/download/v0.1.0/grepalert_0.1.0_linux_amd64.tar.gz
+tar xzf grepalert_0.1.0_linux_amd64.tar.gz && cd grepalert_0.1.0_linux_amd64
+./grepalert-agent -version
 ```
 
-The dashboard's web UI is embedded in its binary, so each program is still a single file to copy. To build the agent only, `go build ./cmd/grepalert-agent` is enough (no Node.js needed).
+The dashboard's web UI is embedded in its binary, so each program is a single static file with no dependencies. `checksums.txt` on the release page lists the SHA-256 of every archive.
+
+**Containers.** Images for linux/amd64 and linux/arm64 are on GitHub Container Registry:
+- **Dashboard:** start it on http://localhost:9400 and sign in as `admin`:
+
+  ```bash
+  docker run -d --name grepalert-dashboard -p 9400:9400     -e GREPALERT_DASHBOARD_PASSWORD=change-me-please     -e GREPALERT_ENROLL_TOKEN=$(openssl rand -hex 16)     -v grepalert-dashboard:/var/lib/grepalert-dashboard     ghcr.io/fadhlanhawali/grepalert-dashboard:0.1.0
+  ```
+- **Agent, connected to that dashboard:** it enrolls itself and gets its rules from a group. Use the same enrollment token as the dashboard:
+
+  ```bash
+  docker run -d --name grepalert-agent     -e GREPALERT_DASHBOARD_URL=http://dashboard-host:9400     -e GREPALERT_ENROLL_TOKEN=<the same token>     -v /var/log:/var/log:ro -v grepalert-agent:/var/lib/grepalert     ghcr.io/fadhlanhawali/grepalert-agent:0.1.0
+  ```
+- **Agent, standalone:** put your `rules.yaml` in a folder and mount it at `/var/lib/grepalert`. It is reloaded when you edit it:
+
+  ```bash
+  docker run -d --name grepalert-agent     -e SLACK_WEBHOOK_URL=https://hooks.slack.com/...     -v $PWD/grepalert:/var/lib/grepalert -v /var/log:/var/log:ro     ghcr.io/fadhlanhawali/grepalert-agent:0.1.0
+  ```
+
+Both images read a built-in config driven by these environment variables ([agent](examples/container/agent.yaml), [dashboard](examples/container/dashboard.yaml)). Mount your own file at `/etc/grepalert/agent.yaml` or `/etc/grepalert/dashboard.yaml` for labels, SSO, TLS and everything else.
+
+**From source.** Building needs Go 1.26+ and, for the dashboard's UI, Node.js 20+:
+
+```bash
+make build            # the web UI and both binaries, into bin/
+```
+
+The agent alone needs no Node.js: `go build ./cmd/grepalert-agent`.
+
+## Quick start
 
 **Agent**, on each server:
 
@@ -100,3 +133,5 @@ Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselv
 | [Memory and performance](docs/performance.md) | Why the agent's memory stays flat, multi-GB logs, many files, load testing |
 | [Agent API](docs/api.md) | The agent's HTTP API |
 | [Development](docs/development.md) | Code layout, building, working on the web UI |
+| [Releasing](docs/releasing.md) | How a release is cut: binaries, container images, changelog |
+| [Changelog](CHANGELOG.md) | What changed in each version |

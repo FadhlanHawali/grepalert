@@ -1,0 +1,32 @@
+[← Documentation index](../README.md#documentation)
+
+# Releasing
+
+Releases are built by GitHub Actions ([.github/workflows/release.yml](../.github/workflows/release.yml)) when a version tag is pushed.
+
+1. **Update the changelog.** Add a `## [X.Y.Z] - YYYY-MM-DD` section at the top of [CHANGELOG.md](../CHANGELOG.md), and a link line for it at the bottom. That section becomes the release notes.
+2. **Try the release build locally** (optional). This builds every archive into `dist/`, the same way the workflow does:
+
+   ```bash
+   VERSION=X.Y.Z scripts/release.sh
+   ```
+3. **Tag and push:**
+
+   ```bash
+   git tag -a vX.Y.Z -m "grepalert X.Y.Z"
+   git push origin main vX.Y.Z
+   ```
+
+The workflow then:
+- **Tests:** builds the web UI, then runs `go vet` and the tests.
+- **Binaries:** builds `grepalert-agent` and `grepalert-dashboard` for Linux, macOS and Windows (amd64/arm64), with the version set to `X.Y.Z`. They're packed with the README, changelog, license and example configs, plus `checksums.txt`.
+- **GitHub Release:** publishes those files as release `vX.Y.Z`. A tag with a hyphen, like `v0.2.0-rc.1`, becomes a pre-release.
+- **Images:** builds and pushes `ghcr.io/<owner>/grepalert-agent` and `ghcr.io/<owner>/grepalert-dashboard` for linux/amd64 and linux/arm64, tagged `X.Y.Z`, `X.Y` and `latest`. Pre-releases don't get `latest`.
+
+**First release only:** GitHub creates the two container packages as **private**. On GitHub, open your profile → **Packages** → each `grepalert-*` package → **Package settings**, set the visibility to **Public**, and link it to the repository. Only then can anyone pull the images.
+
+The [CI workflow](../.github/workflows/ci.yml) runs on every push to `main` and on pull requests:
+- builds the UI
+- runs `gofmt`, `go vet` and the tests
+- runs `govulncheck`
+- builds both images for both architectures

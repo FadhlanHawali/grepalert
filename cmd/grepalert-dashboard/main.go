@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,11 +15,17 @@ import (
 	"time"
 
 	"github.com/fadhlanhawali/grepalert/internal/dashboard"
+	"github.com/fadhlanhawali/grepalert/internal/version"
 )
 
 func main() {
 	configPath := flag.String("config", "dashboard.yaml", "path to dashboard config")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("grepalert-dashboard", version.Version)
+		return
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg, err := dashboard.LoadConfig(*configPath)
@@ -35,6 +42,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	log.Info("starting", "version", version.Version, "listen", cfg.Listen)
 	s := dashboard.New(cfg, store, log)
 	if !s.AuthConfigured() {
 		log.Warn("no sign-in configured (auth.password, auth.oidc or local users): anyone who can reach the dashboard is an admin")

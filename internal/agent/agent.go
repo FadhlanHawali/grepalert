@@ -20,9 +20,11 @@ import (
 	"time"
 
 	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/fadhlanhawali/grepalert/internal/version"
 )
 
-var Version = "0.1.0"
+// Version is the release version (set at build time, see internal/version).
+var Version = version.Version
 
 type Agent struct {
 	cfg     Config

@@ -1,0 +1,12 @@
+# Default config of the grepalert-dashboard container image. Mount your own
+# file at /etc/grepalert/dashboard.yaml for SSO, TLS and the rest (see
+# examples/dashboard.yaml).
+#
+#   GREPALERT_DASHBOARD_PASSWORD   password of the built-in "admin" user (set it!)
+#   GREPALERT_ENROLL_TOKEN         optional fixed token agents can enroll with
+listen: ":9400"
+data_file: /var/lib/grepalert-dashboard/data.json
+auth:
+  username: admin
+  password: ${GREPALERT_DASHBOARD_PASSWORD}
+enrollment_token: ${GREPALERT_ENROLL_TOKEN}
