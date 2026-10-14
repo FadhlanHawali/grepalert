@@ -2,7 +2,7 @@
 
 Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a webhook.
 
-grepalert is for when Loki + Promtail + Grafana, or OBM, is more setup than the problem needs. It is two static Go binaries with no database and no queue:
+grepalert is for when Loki + Promtail + Grafana is more setup than the problem needs. It is two static Go binaries with no database and no queue:
 
 | Binary | Runs on | Job |
 |---|---|---|
@@ -400,7 +400,7 @@ Tailers for files that are no longer referenced are stopped. Tailers for new fil
 
 ## Memory: built not to grow
 
-This is the main lesson from OBM. Every structure that could grow with log volume has a hard limit:
+Log agents that grow with log volume end up competing with the applications they watch. In grepalert, every structure that could grow with log volume has a hard limit:
 
 | Concern | How grepalert bounds it |
 |---|---|
