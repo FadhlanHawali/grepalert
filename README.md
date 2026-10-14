@@ -135,3 +135,7 @@ Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselv
 | [Development](docs/development.md) | Code layout, building, working on the web UI |
 | [Releasing](docs/releasing.md) | How a release is cut: binaries, container images, changelog |
 | [Changelog](CHANGELOG.md) | What changed in each version |
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
