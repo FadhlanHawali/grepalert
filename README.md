@@ -2,6 +2,12 @@
 
 Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a webhook.
 
+**On its own.** One agent and a rules file on the server is all it takes:
+
+![A standalone agent: it reads rules.yaml from the server, matches a log line, pulls out values and posts the message straight to the webhook; editing rules.yaml reloads it without a restart; repeats are suppressed and summed up once](docs/assets/standalone.gif)
+
+**With the dashboard.** Manage many agents: rules come from git, and the same alert from many servers becomes one:
+
 ![How grepalert works: rules go from git through the dashboard to every agent; an agent matches a log line, pulls values out of it and sends your message to a webhook; the same alert from many servers becomes one; repeats are suppressed](docs/assets/how-it-works.gif)
 
 grepalert is for when Loki + Promtail + Grafana is more setup than the problem needs. It is two static Go binaries with no database and no queue:

@@ -189,7 +189,13 @@ def frame(n):
             d.text((CHAT[0] + 20, y + 24), sub, font=F_SMALL, fill=MUTED)
         y += h + 8
 
-    # moving dots
+    draw_moving_dots(d, dots, n)
+
+    draw_caption(d, CAPTIONS, n)
+    return img
+
+
+def draw_moving_dots(d, dots, n):
     for s, e, a, b, col in dots:
         if s <= n <= e:
             t = ease((n - s) / (e - s))
@@ -197,25 +203,29 @@ def frame(n):
             d.ellipse((x - 7, yy - 7, x + 7, yy + 7), fill=col)
             d.ellipse((x - 3, yy - 3, x + 3, yy + 3), fill=PANEL)
 
-    # caption
-    cap = [c for c in CAPTIONS if c[0] <= n][-1]
-    d.rounded_rectangle(CAPTION, 10, fill=TEXT)
-    d.ellipse((CAPTION[0] + 14, CAPTION[1] + 14, CAPTION[0] + 42, CAPTION[1] + 42), fill=ACCENT)
+
+def draw_caption(d, captions, n, box=None):
+    box = box or CAPTION
+    cap = [c for c in captions if c[0] <= n][-1]
+    d.rounded_rectangle(box, 10, fill=TEXT)
+    d.ellipse((box[0] + 14, box[1] + 14, box[0] + 42, box[1] + 42), fill=ACCENT)
     num_w = d.textlength(cap[1], font=F_CAP)
-    d.text((CAPTION[0] + 28 - num_w / 2, CAPTION[1] + 17), cap[1], font=F_CAP, fill=PANEL)
-    d.text((CAPTION[0] + 56, CAPTION[1] + 18), cap[2], font=F_CAP, fill=PANEL)
-    return img
+    d.text((box[0] + 28 - num_w / 2, box[1] + 17), cap[1], font=F_CAP, fill=PANEL)
+    d.text((box[0] + 56, box[1] + 18), cap[2], font=F_CAP, fill=PANEL)
+
+
+def save_gif(frames, out, palette_frame):
+    # One shared palette keeps colors steady between frames and the file small.
+    palette = frames[palette_frame].quantize(colors=96, method=Image.Quantize.MEDIANCUT)
+    pal = [f.quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
+    durations = [FPS_MS] * len(frames)
+    durations[-1] = 2200  # hold the last frame before looping
+    pal[0].save(out, save_all=True, append_images=pal[1:], duration=durations, loop=0, optimize=True, disposal=1)
+    print(out, os.path.getsize(out) // 1024, "KB")
 
 
 def main():
-    frames = [frame(n) for n in range(TOTAL)]
-    # One shared palette keeps colors steady between frames and the file small.
-    palette = frames[120].quantize(colors=96, method=Image.Quantize.MEDIANCUT)
-    pal = [f.quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
-    durations = [FPS_MS] * TOTAL
-    durations[-1] = 2200  # hold the last frame before looping
-    pal[0].save(OUT, save_all=True, append_images=pal[1:], duration=durations, loop=0, optimize=True, disposal=1)
-    print(OUT, os.path.getsize(OUT) // 1024, "KB")
+    save_gif([frame(n) for n in range(TOTAL)], OUT, 120)
 
 
 if __name__ == "__main__":
