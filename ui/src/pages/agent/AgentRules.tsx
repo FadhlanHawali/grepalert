@@ -39,7 +39,10 @@ export function AgentRules({ a }: { a: Agent }) {
 
   return (
     <>
-      {managed && a.group && <Msg style={{ margin: '0 0 10px' }}>This agent's rules are managed by group <b>{a.group}</b>. To change them, edit the group's rules or move the agent out of the group.</Msg>}
+      <h3 className="sec" style={{ marginTop: 0 }}>
+        {a.group ? <>Rules from group {a.group}</> : 'Rules'} <span className="muted" style={{ fontWeight: 'normal' }}>— what this agent runs</span>
+      </h3>
+      {managed && a.group && <Msg style={{ margin: '0 0 10px' }}>Group <b>{a.group}</b> manages these rules: they replaced the agent's own rules when it joined the group. To change them, edit the group's rules or move the agent out of the group.</Msg>}
       <CodeEditor value={text} onChange={managed ? undefined : v => { setText(v); setDirty(true); }} />
       <div className="row">
         {managed
@@ -57,7 +60,9 @@ export function AgentRules({ a }: { a: Agent }) {
   );
 }
 
-const LOCAL_PLACEHOLDER = `rules:
+const LOCAL_PLACEHOLDER = `(none yet) For example:
+
+rules:
   - name: billing-batch
     files: [/var/log/billing/batch.log]
     pattern: FAILED
@@ -95,7 +100,8 @@ function LocalRules({ a }: { a: Agent }) {
 
   return (
     <>
-      <h3 className="sec">Local rules <span className="muted" style={{ fontWeight: 'normal' }}>— this machine only</span></h3>
+      <h3 className="sec">Local rules <span className="muted" style={{ fontWeight: 'normal' }}>— this machine only, on top of the rules above</span>{' '}
+        {enabled && !text.trim() && <span className="badge">none</span>}</h3>
       <p className="muted" style={{ margin: '0 0 8px' }}>
         Extra rules for {a.name} on top of {a.group ? `group ${a.group}'s rules` : 'the rules above'}: for example a file only this server has.
         They can use the {a.group ? "group's " : ''}webhooks, but can only add rules, never replace them. Kept on the agent in <code>rules.local.yaml</code>.

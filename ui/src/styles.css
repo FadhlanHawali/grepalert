@@ -148,3 +148,4 @@ tr.dim td { color: var(--muted); }
 .sim-alert + .sim-alert { margin-top: 10px; }
 .delivery pre.preview { margin-top: 4px; }
 @media (max-width: 900px) { .playground { grid-template-columns: 1fr; } }
+textarea::placeholder { color: var(--muted); opacity: .6; font-style: italic; }
