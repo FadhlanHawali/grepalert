@@ -10,10 +10,6 @@ Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a
 
 ![How grepalert works: rules go from git through the dashboard to every agent; an agent matches a log line, pulls values out of it and sends your message to a webhook; the same alert from many servers becomes one; repeats are suppressed](docs/assets/how-it-works.gif)
 
-**If the dashboard goes down.** Agents keep alerting. They work from the rules, read positions and silences on their own disk, even across a restart:
-
-![The dashboard goes down: the agent keeps running from its disk and, after 15 seconds, alerts the webhook directly while silenced rules stay silent; the agent restarts during the outage, resumes from its saved position so a line written meanwhile still alerts; the dashboard comes back and the agent reconnects on its own](docs/assets/dashboard-down.gif)
-
 grepalert is for when Loki + Promtail + Grafana is more setup than the problem needs. It is two static Go binaries with no database and no queue:
 
 | Binary | Runs on | Job |
@@ -30,6 +26,16 @@ grepalert is for when Loki + Promtail + Grafana is more setup than the problem n
                                                           tails /var/log/*.log
 ```
 
+## When rules change, or the dashboard fails
+
+**Staged rollout.** A rule change can reach a group in stages. If the agents on the new version alert far more than the others, the rollout stops itself and everyone goes back. See [Safe rule rollout](docs/rollout.md).
+
+![Staged rollout: a rule change goes to one agent first, is watched, then goes to half of the agents and then all; a bad change makes its first agent alert far more than the others, so the rollout stops, every agent goes back, and ops is told](docs/assets/staged-rollout.gif)
+
+**If the dashboard goes down.** Agents keep alerting. They work from the rules, read positions and silences on their own disk, even across a restart:
+
+![The dashboard goes down: the agent keeps running from its disk and, after 15 seconds, alerts the webhook directly while silenced rules stay silent; the agent restarts during the outage, resumes from its saved position so a line written meanwhile still alerts; the dashboard comes back and the agent reconnects on its own](docs/assets/dashboard-down.gif)
+
 ## Quick start
 
 ```bash
@@ -45,6 +51,19 @@ cp examples/agent.yaml examples/rules.yaml /etc/grepalert/
 export GREPALERT_AGENT_TOKEN=$(openssl rand -hex 16) SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 grepalert-agent -config /etc/grepalert/agent.yaml
 ```
+
+That is all a standalone agent needs: no dashboard required.
+
+**Changing a standalone agent's rules.** Edit `rules.yaml` and save. There is nothing to reload and no restart:
+- **Picking up changes:** the agent checks the file every `rescan_interval` (10 s by default) and applies a new version on its own. It logs `rules applied`, and files that the new rules add or drop are followed or released.
+- **Broken edits:** a file that fails validation is not applied. The agent logs `rules file reload failed, keeping previous rules` with the reason and keeps alerting with the last good rules. Fix the file and save again.
+- **Checking before you save:** validate a file first with the same check the agent runs:
+
+  ```bash
+  grepalert-agent -check /etc/grepalert/rules.yaml   # exit 0 and "OK: …", or exit 1 and the error
+  ```
+- **No file access:** `PUT /api/v1/rules` on the agent's API validates, saves and applies in one step (see [Agent API](docs/api.md)).
+- **Extra local rules:** `rules.local.yaml` next to `rules.yaml` is reloaded the same way.
 
 **Dashboard**:
 

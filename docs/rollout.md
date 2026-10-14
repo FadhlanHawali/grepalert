@@ -10,6 +10,8 @@ A bad rule can page everyone at once, or quietly match nothing. Four tools in th
 - For a git group, a rollback also pauses following git. Otherwise the next fetch would bring the bad version back. **Sync from git** resumes it.
 - The last 50 versions are kept per group, plus any version an agent still runs.
 
+![Staged rollout: one agent first, then half, then all; a bad change stops itself](assets/staged-rollout.gif)
+
 **Staged rollout.** Turn it on in the group's settings (**Edit → Rule changes**). A rule change then reaches the group in stages: by default 1 agent, then 10%, then everyone.
 - **Watching a stage.** Each stage is watched for a while (5 minutes by default). The dashboard compares the alerts per agent on the new version with the agents still on the previous version.
 - **Automatic stop.** The rollout stops if the new version raises more than 3× the alerts, with at least 10 alerts so a few stray matches don't count. It also stops if an agent refuses the new rules (for example an unset `${VAR}`). Every agent then goes back to the previous version, and the agent-down webhook gets a `rollout` alert.
