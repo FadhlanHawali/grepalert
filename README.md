@@ -1,6 +1,8 @@
 # grepalert
 
-Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a webhook.
+**Alerts from your logs in five minutes. No Loki, no Elasticsearch, no database.**
+
+Tail a file, match a pattern, post a clean message to Slack, Teams or any webhook. Run it on one server, or manage a whole fleet from the dashboard.
 
 **On its own.** One agent and a rules file on the server is all it takes:
 
@@ -10,7 +12,7 @@ Log-based alerting without the stack. Tail a file, grep for a pattern, POST to a
 
 ![How grepalert works: rules go from git through the dashboard to every agent; an agent matches a log line, pulls values out of it and sends your message to a webhook; the same alert from many servers becomes one; repeats are suppressed](docs/assets/how-it-works.gif)
 
-grepalert is for when Loki + Promtail + Grafana is more setup than the problem needs. It is two static Go binaries with no database and no queue:
+It is two static Go binaries with no database and no queue:
 
 | Binary | Runs on | Job |
 |---|---|---|
