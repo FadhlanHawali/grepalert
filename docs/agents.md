@@ -51,6 +51,8 @@ Measured with 10 VMs that the dashboard could not reach directly:
 - **Leaving:** the agent keeps running the group's rules until you restore. When you move it out of its group, the dashboard offers to restore its own rules; you can also do it later from the agent's **Rules** tab.
 - **Editing instead of restoring:** if you edit the agent's rules directly instead, those become its own rules, and the saved copy is dropped.
 
+![The dashboard goes down, then the agent restarts during the outage](assets/dashboard-down.gif)
+
 **If the dashboard is down.**
 - **Rules:** agents keep running the rules on their disk, including after a restart.
 - **Alerts:** they go straight to the webhooks after `fallback_after` (15s).
