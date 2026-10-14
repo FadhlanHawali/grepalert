@@ -41,6 +41,8 @@ export interface AgentStatus {
   rules?: RuleStatus[];
   files?: FileStatus[];
   alerts_total?: number;
+  /** The agent's own rules, saved when a group replaced them. */
+  own_rules_hash?: string;
   webhooks: {
     sent: number; failed: number; dropped: number; queued: number;
     via_dashboard?: number; fallback?: number; silenced?: number;

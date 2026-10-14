@@ -3,6 +3,7 @@ import { api, ApiError, enc, errText } from '../api';
 import { useApp } from '../state';
 import type { Agent, AgentStatus } from '../types';
 import { Field, Modal, Msg } from '../components/ui';
+import { offerOwnRules } from '../domain';
 
 type Push = { ok: boolean; action: string; error?: string };
 
@@ -46,6 +47,7 @@ export function AgentDialog({ agent, group: initialGroup }: { agent?: Agent; gro
       let note = agent ? `Saved ${r.name}` : `Connected ${r.name}`;
       if (r.push) note += r.push.ok ? ` · group rules ${r.push.action}` : ` · pushing group rules failed: ${r.push.error}`;
       app.toast(note, !!r.push && !r.push.ok);
+      if (agent && !group && agent.group) await offerOwnRules(agent, agent.group, app.toast);
       await app.refresh();
       // Show the agent where it now lives, with its details open.
       app.go(group ? { kind: 'group', name: group } : { kind: app.view.kind === 'ungrouped' ? 'ungrouped' : 'all' });

@@ -196,3 +196,28 @@ func TestPlayground(t *testing.T) {
 	}
 	h.do("POST", "/api/playground", map[string]any{"rules": "rules: [{name: x}]", "lines": "a"}, http.StatusUnprocessableEntity)
 }
+
+func TestRestoreOwnRulesAfterLeavingGroup(t *testing.T) {
+	h := newHarness(t)
+	own := strings.Replace(groupRules, "ERROR", "PANIC", 1)
+	if _, _, err := h.agent.ApplyRules([]byte(own), "local"); err != nil {
+		t.Fatal(err)
+	}
+	h.do("POST", "/api/groups", map[string]any{"name": "web", "source": "manual", "rules": groupRules}, http.StatusOK)
+	h.do("POST", "/api/agents", map[string]any{"url": h.aURL, "token": "tok", "group": "web"}, http.StatusOK)
+	if string(h.agent.Rules().Raw) != groupRules {
+		t.Fatal("group rules not applied")
+	}
+	if code := h.do("GET", "/api/agents/agent-a/own-rules", nil, http.StatusOK); code == nil {
+		t.Fatal("no response")
+	}
+	// Refused while the group would push its rules back.
+	h.do("POST", "/api/agents/agent-a/own-rules/restore", nil, http.StatusConflict)
+
+	h.do("PUT", "/api/agents/agent-a", map[string]any{"url": h.aURL, "group": ""}, http.StatusOK)
+	h.do("POST", "/api/agents/agent-a/own-rules/restore", nil, http.StatusOK)
+	if string(h.agent.Rules().Raw) != own {
+		t.Fatalf("after restore the agent runs %q", h.agent.Rules().Raw)
+	}
+	h.do("GET", "/api/agents/agent-a/own-rules", nil, http.StatusNotFound)
+}

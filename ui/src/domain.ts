@@ -1,4 +1,5 @@
 // Logic shared by several pages: rule sync state, rollouts, stages.
+import { api, enc, errText } from './api';
 import type { Agent, Group, Silence } from './types';
 
 export const DEFAULT_STAGES = ['1', '10%', '100%'];
@@ -56,6 +57,21 @@ export const activeSilences = (all: Silence[]) =>
 export const scopeText = (s: Silence) =>
   [s.group ? `group ${s.group}` : 'all groups', s.rules?.length ? `rules ${s.rules.join(', ')}` : 'all rules',
     s.agents?.length ? `agents ${s.agents.join(', ')}` : ''].filter(Boolean).join(' · ');
+
+/**
+ * After an agent left its group, offers to bring back the rules it had
+ * before the group replaced them (the agent kept a copy).
+ */
+export async function offerOwnRules(a: Agent, oldGroup: string | undefined, toast: (t: string, bad?: boolean) => void) {
+  if (!oldGroup || !a.status?.own_rules_hash) return;
+  if (!confirm(`${a.name} left group ${oldGroup} and still runs that group's rules.
+
+Restore the agent's own rules from before it joined a group (version ${a.status.own_rules_hash})?`)) return;
+  try {
+    await api('POST', `/api/agents/${enc(a.name)}/own-rules/restore`);
+    toast(`${a.name} runs its own rules again`);
+  } catch (e) { toast(errText(e), true); }
+}
 
 export function pushSummary(results: Record<string, { ok: boolean; action: string; error?: string }>): string {
   const r = Object.entries(results || {});

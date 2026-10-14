@@ -13,13 +13,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 
+	"time"
+
 	"github.com/fadhlanhawali/grepalert/internal/alert"
 	"github.com/fadhlanhawali/grepalert/internal/rules"
-	"time"
 )
 
 // DashboardConfig makes the agent connect out to a dashboard, so the
@@ -100,7 +102,11 @@ type connector struct {
 	started    time.Time
 	alertsDone chan struct{}
 	silences   atomic.Pointer[[]Silence]
-	fallback   func(a Alert, hooks []*alert.Hook) // direct delivery
+	// silencesFile keeps the last silence list, so silences still hold when
+	// the agent restarts while the dashboard is unreachable.
+	silencesFile string
+	savedSil     []byte                             // last list written, to skip identical writes
+	fallback     func(a Alert, hooks []*alert.Hook) // direct delivery
 }
 
 // routedAlert is an alert plus its resolved webhooks, as sent to the dashboard.
@@ -155,7 +161,50 @@ func newConnector(a *Agent) (*connector, error) {
 		alertsDone: make(chan struct{}),
 	}
 	c.state.Store(&DashboardStatus{URL: c.base})
+	c.silencesFile = filepath.Join(filepath.Dir(a.cfg.IdentityFile), "grepalert.silences.json")
+	c.loadSilences()
 	return c, nil
+}
+
+// loadSilences restores the silence list saved before a restart, minus the
+// ones that ended meanwhile. The dashboard replaces it on the first poll.
+func (c *connector) loadSilences() {
+	raw, err := os.ReadFile(c.silencesFile)
+	if err != nil {
+		return
+	}
+	var list []Silence
+	if json.Unmarshal(raw, &list) != nil {
+		return
+	}
+	live := list[:0]
+	for _, s := range list {
+		if time.Now().Before(s.EndsAt) {
+			live = append(live, s)
+		}
+	}
+	c.silences.Store(&live)
+	c.savedSil = raw
+	if len(live) > 0 {
+		c.a.log.Info("restored saved silences", "active", len(live), "path", c.silencesFile)
+	}
+}
+
+// setSilences installs the dashboard's current silence list and saves it.
+func (c *connector) setSilences(list []Silence) {
+	if list == nil {
+		list = []Silence{}
+	}
+	c.silences.Store(&list)
+	raw, _ := json.Marshal(list)
+	if bytes.Equal(raw, c.savedSil) {
+		return
+	}
+	if err := writeFileAtomic(c.silencesFile, raw); err != nil {
+		c.a.log.Warn("cannot save silences", "path", c.silencesFile, "err", err)
+		return
+	}
+	c.savedSil = raw
 }
 
 func (c *connector) status() DashboardStatus { return *c.state.Load() }
@@ -318,7 +367,7 @@ func (c *connector) poll(ctx context.Context) ([]*tunnelRequest, error) {
 	}
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		c.silences.Store(&out.Silences)
+		c.setSilences(out.Silences)
 		return out.Requests, nil
 	case out.Code == "unknown_agent":
 		return nil, errUnknownAgent

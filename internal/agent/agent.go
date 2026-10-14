@@ -205,12 +205,71 @@ func (a *Agent) loadRulesFile(initial bool) error {
 // ApplyRules validates raw, persists it to the rules file and activates it.
 // On validation failure nothing changes. changed is false when raw is identical
 // to the active rules, in which case nothing is done.
+//
+// The first time a dashboard group pushes its rules (origin "group:<name>"),
+// the agent's own rules are saved to rules.before-group.yaml so they can be
+// restored when it leaves the group. Any other change (a direct edit while
+// ungrouped) makes the new rules the agent's own, and drops that copy.
 func (a *Agent) ApplyRules(raw []byte, origin string) (c *rules.Compiled, changed bool, err error) {
 	if cur := a.Rules(); cur.Hash == rules.Hash(raw) {
 		return cur, false, nil
 	}
+	fromGroup := strings.HasPrefix(origin, "group:")
+	if fromGroup {
+		if _, err := rules.Parse(raw); err != nil {
+			return nil, false, err // a rejected push replaces nothing, so saves nothing
+		}
+		a.saveOwnRules()
+	}
 	c, err = a.apply(raw, origin, true)
+	if err == nil && !fromGroup {
+		os.Remove(a.ownRulesPath())
+	}
 	return c, err == nil, err
+}
+
+func (a *Agent) ownRulesPath() string {
+	return filepath.Join(filepath.Dir(a.cfg.RulesFile), "rules.before-group.yaml")
+}
+
+// saveOwnRules keeps a copy of the rules file before a group replaces it,
+// unless a copy already exists (it is then the agent's own rules from before
+// its first group) or there is nothing to keep.
+func (a *Agent) saveOwnRules() {
+	path := a.ownRulesPath()
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	cur, err := os.ReadFile(a.cfg.RulesFile)
+	if err != nil || len(bytes.TrimSpace(cur)) == 0 {
+		return
+	}
+	if err := writeFileAtomic(path, cur); err != nil {
+		a.log.Warn("cannot save the agent's own rules before the group's replace them", "path", path, "err", err)
+		return
+	}
+	a.log.Info("saved the agent's own rules before a group replaced them", "path", path, "hash", rules.Hash(cur))
+	a.events.add(Event{Time: time.Now(), Type: "rules", Message: "own rules " + rules.Hash(cur) + " saved to " + path + " before the group's rules replaced them"})
+}
+
+// OwnRules returns the agent's own rules saved when a group replaced them.
+func (a *Agent) OwnRules() ([]byte, bool) {
+	raw, err := os.ReadFile(a.ownRulesPath())
+	return raw, err == nil
+}
+
+// RestoreOwnRules makes the saved own rules the active rules again.
+func (a *Agent) RestoreOwnRules() (*rules.Compiled, error) {
+	raw, ok := a.OwnRules()
+	if !ok {
+		return nil, errors.New("there are no saved rules from before a group")
+	}
+	c, _, err := a.ApplyRules(raw, "restored")
+	if err != nil {
+		return nil, fmt.Errorf("the saved rules no longer validate: %w", err)
+	}
+	os.Remove(a.ownRulesPath()) // also when they were already active
+	return c, nil
 }
 
 func (a *Agent) apply(raw []byte, origin string, persist bool) (*rules.Compiled, error) {
@@ -421,6 +480,9 @@ type Status struct {
 	LocalRules      int          `json:"local_rules,omitempty"`
 	LocalRulesError string       `json:"local_rules_error,omitempty"`
 	Rules           []RuleStatus `json:"rules"`
+	// OwnRulesHash identifies the agent's own rules saved when a group
+	// replaced them (restorable after leaving the group), if any.
+	OwnRulesHash string `json:"own_rules_hash,omitempty"`
 	// AlertsTotal counts every alert the rules raised since the agent
 	// started, across rule changes. The dashboard uses it to spot alert
 	// spikes during a staged rollout.
@@ -531,6 +593,9 @@ func (a *Agent) Status() Status {
 	s.Webhooks.Queued = a.notif.sender.Queued()
 	s.SuppressKeys = a.eng.suppressKeys()
 	s.AlertsTotal = a.eng.alertsTotal.Load()
+	if raw, ok := a.OwnRules(); ok {
+		s.OwnRulesHash = rules.Hash(raw)
+	}
 	if a.conn != nil {
 		ds := a.conn.status()
 		s.Dashboard = &ds

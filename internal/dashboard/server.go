@@ -190,6 +190,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agents/{name}/test", onAgent(RoleViewer, s.proxy("POST", "/api/v1/test")))
 	mux.HandleFunc("PUT /api/agents/{name}/rules", onAgent(RoleEditor, s.proxy("PUT", "/api/v1/rules")))
 	mux.HandleFunc("POST /api/agents/{name}/validate", onAgent(RoleEditor, s.proxy("POST", "/api/v1/rules/validate")))
+	mux.HandleFunc("GET /api/agents/{name}/own-rules", onAgent(RoleViewer, s.proxy("GET", "/api/v1/rules/own")))
+	mux.HandleFunc("POST /api/agents/{name}/own-rules/restore", onAgent(RoleEditor, s.handleRestoreOwnRules))
 	mux.HandleFunc("GET /api/agents/{name}/local-rules", onAgent(RoleViewer, s.handleGetLocalRules))
 	mux.HandleFunc("PUT /api/agents/{name}/local-rules", onAgent(RoleEditor, s.handlePutLocalRules))
 

@@ -25,6 +25,8 @@ const maxRulesBody = 1 << 20
 //	POST /api/v1/rules/validate   validate rules without applying
 //	POST /api/v1/rules/dryrun     replay the last ?window= (default 1h, max 3h) of
 //	                              the logs through the posted rules; nothing is sent
+//	GET  /api/v1/rules/own        the agent's own rules from before a group replaced them
+//	POST /api/v1/rules/own/restore  make those the active rules again
 //	GET  /api/v1/rules/local      this machine's extra rules (JSON)
 //	PUT  /api/v1/rules/local      replace them (empty body removes them)
 //	GET  /api/v1/events?limit=N   recent events, newest first
@@ -107,6 +109,24 @@ func (a *Agent) api() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("GET /api/v1/rules/own", func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := a.OwnRules()
+		if !ok {
+			writeErr(w, http.StatusNotFound, errors.New("no saved rules: no group has replaced this agent's own rules"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("X-Rules-Hash", rules.Hash(raw))
+		w.Write(raw)
+	})
+	mux.HandleFunc("POST /api/v1/rules/own/restore", func(w http.ResponseWriter, r *http.Request) {
+		c, err := a.RestoreOwnRules()
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hash": c.Hash, "rules": len(c.Rules)})
 	})
 	mux.HandleFunc("GET /api/v1/rules/local", func(w http.ResponseWriter, r *http.Request) {
 		raw, hash, rejected := a.LocalRules()

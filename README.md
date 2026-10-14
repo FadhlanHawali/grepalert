@@ -362,6 +362,28 @@ The webhook receives `{"text": "Critical, DS1 is suspended"}`.
 - **Branching on the kind.** To word summaries differently, branch on the kind: `{{ if eq .Kind "summary" }}…{{ end }}`.
 - **Other fields.** `.Groups.reason` is there too, as are `.Agent`, `.Host` and `.Time`.
 
+### What an agent keeps on disk
+
+| File (next to `rules_file`) | What it is |
+|---|---|
+| `rules.yaml` (`rules_file`) | The rules the agent runs: its own, or its group's once it joins one (a group push overwrites it) |
+| `rules.local.yaml` | Extra rules for this machine only, run on top. Groups never touch it |
+| `rules.before-group.yaml` | The agent's own rules, saved when a group first replaced them |
+| `grepalert.state.json` | Read positions, so restarts neither miss nor repeat lines |
+| `grepalert.identity.json` | The credential an enrolled agent got from the dashboard |
+| `grepalert.silences.json` | The last silences from the dashboard |
+
+**Joining and leaving a group.**
+- **Joining:** the group's rules replace the agent's own in `rules.yaml`. Before the first replacement, the agent saves its own rules to `rules.before-group.yaml`.
+- **Leaving:** the agent keeps running the group's rules until you restore. When you move it out of its group, the dashboard offers to restore its own rules; you can also do it later from the agent's **Rules** tab.
+- **Editing instead of restoring:** if you edit the agent's rules directly instead, those become its own rules, and the saved copy is dropped.
+
+**If the dashboard is down.**
+- **Rules:** agents keep running the rules on their disk, including after a restart.
+- **Alerts:** they go straight to the webhooks after `fallback_after` (15s).
+- **Silences:** they still hold, even across an agent restart.
+- **Recovery:** when the dashboard is back, agents reconnect by themselves and are brought up to date.
+
 ## Changing rules without restarting
 
 Every route below validates the new rules first. If validation fails, the agent keeps running the old rules and reports the error.

@@ -55,7 +55,42 @@ export function AgentRules({ a }: { a: Agent }) {
         <span className="muted mono">{hash && 'version ' + hash}</span>
       </div>
       <NoteView note={note} />
+      {a.status?.own_rules_hash && <OwnRules a={a} />}
       <LocalRules a={a} />
+    </>
+  );
+}
+
+/** The agent's own rules, saved when a group replaced them. */
+function OwnRules({ a }: { a: Agent }) {
+  const app = useApp();
+  const [text, setText] = useState<string | null>(null);
+  const [note, setNote] = useState<Note>(null);
+  const show = async () => {
+    try { setText((await api<string>('GET', `/api/agents/${enc(a.name)}/own-rules`)).data); }
+    catch (e) { setNote({ kind: 'bad', text: errText(e) }); }
+  };
+  const restore = async () => {
+    if (!confirm(`Make ${a.name} run these rules again, instead of the ones it has now?`)) return;
+    try {
+      await api('POST', `/api/agents/${enc(a.name)}/own-rules/restore`);
+      app.toast(`${a.name} runs its own rules again`);
+      app.refresh();
+    } catch (e) { setNote({ kind: 'bad', text: errText(e) }); }
+  };
+  return (
+    <>
+      <h3 className="sec">Own rules from before a group <span className="muted" style={{ fontWeight: 'normal' }}>— saved, not running</span></h3>
+      <p className="muted" style={{ margin: '0 0 8px' }}>
+        When a group first replaced this agent's rules, the agent kept a copy (version <code>{a.status!.own_rules_hash}</code>, in <code>rules.before-group.yaml</code>).{' '}
+        {a.group ? `Move the agent out of group ${a.group} to restore them.` : 'Restore them to run them again.'}
+      </p>
+      <div className="row" style={{ marginTop: 0 }}>
+        {text === null ? <button onClick={show}>Show them</button> : <button onClick={() => setText(null)}>Hide</button>}
+        {!a.group && app.can('editor', '') && <button className="primary" onClick={restore}>Restore these rules</button>}
+      </div>
+      {text !== null && <pre className="preview mono">{text}</pre>}
+      <NoteView note={note} />
     </>
   );
 }

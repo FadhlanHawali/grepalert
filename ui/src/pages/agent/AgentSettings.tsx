@@ -4,6 +4,7 @@ import { useApp } from '../../state';
 import type { Agent } from '../../types';
 import { ago, zero } from '../../util';
 import { LabelChips } from '../../components/AgentTable';
+import { offerOwnRules } from '../../domain';
 
 /** Admin settings of an agent: connection, group, revoke, remove. */
 export function AgentSettings({ a }: { a: Agent }) {
@@ -48,6 +49,8 @@ function ConnectedSettings({ a, remove }: { a: Agent; remove: () => void }) {
     try {
       const { data: r } = await api<{ push?: { ok: boolean; action: string; error?: string } }>('PUT', `/api/agents/${enc(a.name)}`, { group });
       app.toast(`Saved ${a.name}` + (r.push ? (r.push.ok ? ` · group rules ${r.push.action}` : ` · push failed: ${r.push.error}`) : ''), r.push && !r.push.ok);
+      // Only an explicit "no group" can leave: "automatic" may match a group by label.
+      if (!group && !r.push && a.group) await offerOwnRules(a, a.group, app.toast);
       app.refresh();
     } catch (e) { app.toast(errText(e), true); }
   };
