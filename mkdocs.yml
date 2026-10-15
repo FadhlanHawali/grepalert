@@ -37,17 +37,15 @@ theme:
     - content.code.copy
     - content.code.annotate
     - content.tabs.link
-  palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: custom
-      accent: custom
-      toggle: {icon: material/weather-night, name: Dark mode}
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
+  palette:                       # dark by default; the toggle switches (and is remembered)
+    - scheme: slate
       primary: custom
       accent: custom
       toggle: {icon: material/weather-sunny, name: Light mode}
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle: {icon: material/weather-night, name: Dark mode}
 
 nav:
   - Home: index.md
