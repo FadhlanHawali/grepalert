@@ -1,0 +1,24 @@
+# Java exceptions: alert on the line that names the exception, not on the stack
+# frames or "Caused by" lines below it.
+#   in:  2026-10-15 10:00:01 ERROR [pool-3-thread-1] c.a.Billing - charge failed
+#   in:  java.lang.IllegalStateException: Connection pool shut down
+#   in:  	at com.acme.billing.Billing.charge(Billing.java:42)
+#   in:  Caused by: java.net.SocketTimeoutException: Read timed out
+#   in:  Exception in thread "main" java.lang.OutOfMemoryError: Java heap space
+#   in:  java.lang.IllegalStateException: Connection pool shut down
+#   out: {"text": "IllegalStateException: Connection pool shut down"}
+#   out: {"text": "OutOfMemoryError: Java heap space"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "%s: %s" .Groups.class .Groups.message) }}}'
+
+rules:
+  - name: java-exception
+    files: ["/var/log/app/*.log"]
+    # ^ anchors at the line start, so indented "at ..." frames and "Caused by:"
+    # never match. The package (lower case, dotted) is matched but not kept.
+    pattern: '^(?:Exception in thread "[^"]+" )?(?:[a-z_][\w$]*\.)+(?P<class>[A-Z][\w$]*(?:Exception|Error))(?:: (?P<message>.*))?$'
+    severity: critical
+    webhooks: [chat]
+    suppress: {window: 10m, group_by: class, summary: false}   # the same exception at most every 10 minutes

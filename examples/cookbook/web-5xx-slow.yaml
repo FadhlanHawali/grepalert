@@ -1,0 +1,21 @@
+# 5xx responses that were also slow: status AND response time in one pattern.
+#   in:  10.0.0.7 - - [15/Oct/2026:10:00:01 +0000] "POST /api/checkout HTTP/1.1" 502 157 "-" "curl/8.5" rt=3.412
+#   in:  10.0.0.8 - - [15/Oct/2026:10:00:02 +0000] "POST /api/checkout HTTP/1.1" 502 157 "-" "curl/8.5" rt=0.120
+#   in:  10.0.0.9 - - [15/Oct/2026:10:00:03 +0000] "GET /api/cart?id=7 HTTP/1.1" 200 812 "-" "Mozilla/5.0" rt=4.950
+#   in:  10.0.0.4 - - [15/Oct/2026:10:00:04 +0000] "GET /api/cart?id=9 HTTP/1.1" 504 0 "-" "Mozilla/5.0" rt=30.001
+#   out: {"text": "502 POST /api/checkout took 3.412s"}
+#   out: {"text": "504 GET /api/cart took 30.001s"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "%s %s %s took %ss" .Groups.status .Groups.method .Groups.path .Groups.rt) }}}'
+
+rules:
+  - name: slow-5xx
+    files: [/var/log/nginx/access.log]
+    # method and path (without the query string), a 5xx status, and a response
+    # time of 2 seconds or more: [2-9].x or two or more digits before the dot.
+    pattern: '"(?P<method>[A-Z]+) (?P<path>/[^ ?"]*)[^"]*" (?P<status>5\d\d) .* rt=(?P<rt>(?:[2-9]|\d{2,})\.\d+)'
+    severity: critical
+    webhooks: [chat]
+    suppress: {window: 5m, group_by: path}   # one alert per endpoint per 5 minutes

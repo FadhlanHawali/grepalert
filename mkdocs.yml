@@ -54,6 +54,7 @@ nav:
       - dashboard.yaml: config-dashboard.md
   - Guides:
       - Writing rules: rules.md
+      - Rule cookbook: cookbook.md
       - Running agents: agents.md
       - Dashboard and groups: dashboard.md
       - Safe rule rollout: rollout.md

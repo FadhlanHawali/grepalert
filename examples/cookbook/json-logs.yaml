@@ -1,0 +1,19 @@
+# Structured JSON logs: match the level, pull out fields, and send a short message.
+#   in:  {"time":"2026-10-15T10:00:01Z","level":"error","service":"billing","msg":"invoice 4411 failed: card declined","trace_id":"9f2c"}
+#   in:  {"time":"2026-10-15T10:00:02Z","level":"info","service":"billing","msg":"invoice 4412 paid","trace_id":"77ab"}
+#   in:  {"time":"2026-10-15T10:00:03Z","level":"fatal","service":"ledger","msg":"cannot open \"ledger.db\": disk I/O error","trace_id":"c0de"}
+#   out: {"text": "[billing] invoice 4411 failed: card declined (trace 9f2c)"}
+#   out: {"text": "[ledger] cannot open \\\"ledger.db\\\": disk I/O error (trace c0de)"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "[%s] %s (trace %s)" .Groups.service .Groups.msg .Groups.trace) }}}'
+
+rules:
+  - name: json-errors
+    files: ["/var/log/services/*.json"]
+    # Fields are matched in the order the logger writes them. A message may
+    # contain escaped quotes, so it is "any non-quote, or a backslash pair".
+    pattern: '"level":"(?:error|fatal)","service":"(?P<service>[^"]+)","msg":"(?P<msg>(?:[^"\\]|\\.)*)","trace_id":"(?P<trace>[^"]*)"'
+    severity: critical
+    webhooks: [chat]

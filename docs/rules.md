@@ -1,4 +1,4 @@
-[← Documentation](../README.md#documentation) · Previous: [dashboard.yaml](config-dashboard.md) · Next: [Running agents →](agents.md)
+[← Documentation](../README.md#documentation) · Previous: [dashboard.yaml](config-dashboard.md) · Next: [Rule cookbook →](cookbook.md)
 
 # Writing rules
 
@@ -143,4 +143,4 @@ When a [dashboard group](dashboard.md) manages an agent's rules, the agent can s
 | Test a line | dashboard → agent → Test a line | which of an agent's running rules match a line |
 | Dry run | dashboard → group → Rules | how many alerts draft rules would have sent on the last hours of real logs ([Safe rule rollout](rollout.md)) |
 
-More examples: [examples/rules.yaml](../examples/rules.yaml).
+More examples: the [Rule cookbook](cookbook.md), and [examples/rules.yaml](../examples/rules.yaml).

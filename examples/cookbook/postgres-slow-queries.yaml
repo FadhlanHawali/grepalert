@@ -1,0 +1,21 @@
+# PostgreSQL slow queries (log_min_duration_statement): queries of a second or
+# more, with the start of the statement, at most 80 characters of it.
+#   in:  2026-10-15 10:00:01.123 UTC [4242] LOG:  duration: 999.874 ms  statement: SELECT 1
+#   in:  2026-10-15 10:00:02.456 UTC [4243] LOG:  duration: 2534.871 ms  statement: SELECT * FROM orders WHERE customer_id = 7 ORDER BY created_at DESC
+#   in:  2026-10-15 10:00:03.789 UTC [4244] LOG:  duration: 61002.004 ms  execute S_1: UPDATE ledger SET balance = balance - $1 WHERE account_id = $2
+#   out: {"text": "2534 ms: SELECT * FROM orders WHERE customer_id = 7 ORDER BY created_at DESC"}
+#   out: {"text": "61002 ms: UPDATE ledger SET balance = balance - $1 WHERE account_id = $2"}
+webhooks:
+  - name: dba
+    url: ${DBA_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "%s ms: %s" .Groups.ms .Groups.sql) }}}'
+
+rules:
+  - name: slow-query
+    files: ["/var/log/postgresql/*.log"]
+    # 1000 ms or more: a non-zero digit and 3+ more before the decimals.
+    # Both plain statements and prepared ones ("execute <name>:") count.
+    pattern: 'duration: (?P<ms>[1-9]\d{3,})\.\d+ ms\s+(?:statement|execute [^:]+): (?P<sql>.{1,80})'
+    severity: warning
+    webhooks: [dba]
+    suppress: {window: 10m, max_alerts: 5}   # at most 5 per 10 minutes, then a summary

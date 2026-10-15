@@ -1,0 +1,23 @@
+# The same kind of rule for Kubernetes pods: the "app" container of every pod
+# labelled app=checkout, except the canary, in namespace shop. Each decline
+# code alerts once per 5 minutes, without a summary afterwards.
+#   in:  2026-10-15T10:00:01Z ERROR [req 7f3a] payment declined code=CARD_EXPIRED
+#   in:  2026-10-15T10:00:02Z ERROR [req 7f3b] payment declined code=CARD_EXPIRED
+#   in:  2026-10-15T10:00:03Z ERROR [req 7f3c] payment declined code=INSUFFICIENT_FUNDS
+#   out: {"text": "checkout: payment declined (CARD_EXPIRED)"}
+#   out: {"text": "checkout: payment declined (INSUFFICIENT_FUNDS)"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "checkout: payment declined (%s)" .Groups.code) }}}'
+
+rules:
+  - name: checkout-declines
+    kubernetes:
+      namespace: shop
+      selector: app=checkout,track!=canary   # any Kubernetes label selector
+      container: app
+    pattern: 'payment declined code=(?P<code>[A-Z_]+)'
+    severity: warning
+    webhooks: [chat]
+    suppress: {window: 5m, group_by: code, summary: false}

@@ -1,0 +1,27 @@
+# A multi-tenant service: the same problem for different tenants alerts
+# separately, at most once an hour per tenant, naming the tenant. When the
+# hour is over, one summary says how many more times it happened.
+#   in:  2026-10-15 10:00:01 WARN tenant=acme-corp plan=pro quota exceeded: api_calls 100000/100000
+#   in:  2026-10-15 10:00:02 WARN tenant=acme-corp plan=pro quota exceeded: api_calls 100000/100000
+#   in:  2026-10-15 10:00:03 WARN tenant=globex plan=free quota exceeded: storage 5120/5120
+#   in:  2026-10-15 10:00:04 WARN tenant=acme-corp plan=pro quota exceeded: storage 900/900
+#   out: {"text": "acme-corp (pro) hit its api_calls quota"}
+#   out: {"text": "globex (free) hit its storage quota"}
+#   out: {"text": "acme-corp hit a quota again, 2 more times in the last hour (last: storage)"}
+webhooks:
+  - name: success-team
+    url: ${CUSTOMER_SUCCESS_WEBHOOK_URL}
+    template: >-
+      {"text": {{ if eq .Kind "summary" -}}
+        {{ json (printf "%s hit a quota again, %d more times in the last hour (last: %s)" .Groups.tenant .Suppressed .Groups.resource) }}
+      {{- else -}}
+        {{ json (printf "%s (%s) hit its %s quota" .Groups.tenant .Groups.plan .Groups.resource) }}
+      {{- end }}}
+
+rules:
+  - name: quota-exceeded
+    files: [/var/log/api/api.log]
+    pattern: 'tenant=(?P<tenant>[a-z0-9-]+) plan=(?P<plan>\w+) quota exceeded: (?P<resource>\w+)'
+    severity: info
+    webhooks: [success-team]
+    suppress: {window: 1h, group_by: tenant}

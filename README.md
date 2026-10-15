@@ -196,24 +196,25 @@ Also on the documentation site, with search: [fadhlanhawali.github.io/grepalert]
 **Using it**
 
 3. [Writing rules](docs/rules.md): patterns and captured values, your own alert messages, suppression, absence rules, testing rules.
-4. [Running agents](docs/agents.md): standalone or connected, enrollment and labels, changing rules, files on disk, rotation and restarts, the dashboard being down.
-5. [Dashboard and groups](docs/dashboard.md): agents, groups, rules from the UI or GitHub/GitLab.
-6. [Safe rule rollout](docs/rollout.md): versions and rollback, staged rollout, dry run, local rules per machine.
-7. [Fleet alerting](docs/fleet-alerting.md): one alert across many hosts, silences, agent-down alerts.
-8. [Kubernetes](docs/kubernetes.md): pod logs by label selector, or log files on a volume.
-9. [Sign-in, roles and security](docs/security.md): SSO, roles, audit log, hardening.
+4. [Rule cookbook](docs/cookbook.md): complete, tested recipes: access logs, JSON logs, Java exceptions, thresholds, SSH brute force, Opsgenie and Slack Block Kit payloads.
+5. [Running agents](docs/agents.md): standalone or connected, enrollment and labels, changing rules, files on disk, rotation and restarts, the dashboard being down.
+6. [Dashboard and groups](docs/dashboard.md): agents, groups, rules from the UI or GitHub/GitLab.
+7. [Safe rule rollout](docs/rollout.md): versions and rollback, staged rollout, dry run, local rules per machine.
+8. [Fleet alerting](docs/fleet-alerting.md): one alert across many hosts, silences, agent-down alerts.
+9. [Kubernetes](docs/kubernetes.md): pod logs by label selector, or log files on a volume.
+10. [Sign-in, roles and security](docs/security.md): SSO, roles, audit log, hardening.
 
 **Reference**
 
-10. [Agent API](docs/api.md)
-11. [Memory and performance](docs/performance.md)
-12. [Demo walkthrough](docs/demo.md)
+11. [Agent API](docs/api.md)
+12. [Memory and performance](docs/performance.md)
+13. [Demo walkthrough](docs/demo.md)
 
 **Project**
 
-13. [Development](docs/development.md)
-14. [Releasing](docs/releasing.md)
-15. [Release notes](docs/releases/)
+14. [Development](docs/development.md)
+15. [Releasing](docs/releasing.md)
+16. [Release notes](docs/releases/)
 
 ## License
 

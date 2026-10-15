@@ -1,0 +1,20 @@
+# A job that must report success every night: alert when the line has NOT
+# appeared for 26 hours (a day plus some slack), and again when it is back.
+# Absence rules depend on time passing, so this recipe has no in/out sample.
+webhooks:
+  - name: ops
+    url: ${OPS_WEBHOOK_URL}
+    template: >-
+      {"text": {{ if eq .Kind "recovered" -}}
+        {{ json (printf "Backups are running again: %s" .Line) }}
+      {{- else -}}
+        {{ json "No successful backup in the last 26 hours" }}
+      {{- end }}}
+
+rules:
+  - name: backup-missing
+    files: [/var/log/backup.log]
+    absent: 'backup of \w+ completed successfully'
+    for: 26h
+    severity: critical
+    webhooks: [ops]

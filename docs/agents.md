@@ -1,4 +1,4 @@
-[← Documentation](../README.md#documentation) · Previous: [Writing rules](rules.md) · Next: [Dashboard and groups →](dashboard.md)
+[← Documentation](../README.md#documentation) · Previous: [Rule cookbook](cookbook.md) · Next: [Dashboard and groups →](dashboard.md)
 
 # Running agents
 

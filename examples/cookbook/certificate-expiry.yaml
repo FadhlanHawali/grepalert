@@ -1,0 +1,27 @@
+# Certificates about to expire, with two severities from the same kind of
+# line: a warning from 29 days down to 7, critical under 7. Each rule matches
+# its own range of numbers.
+#   in:  cert-check: certificate api.example.com expires in 45 days
+#   in:  cert-check: certificate shop.example.com expires in 21 days
+#   in:  cert-check: certificate pay.example.com expires in 3 days
+#   in:  cert-check: certificate old.example.com expires in 1 day
+#   out: {"text": "WARNING: shop.example.com expires in 21 days"}
+#   out: {"text": "CRITICAL: pay.example.com expires in 3 days"}
+#   out: {"text": "CRITICAL: old.example.com expires in 1 day"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json (printf "%s: %s expires in %s" (upper .Severity) .Groups.cn .Groups.left) }}}'
+
+rules:
+  - name: certificate-expires-soon
+    files: [/var/log/cert-check.log]
+    pattern: 'certificate (?P<cn>\S+) expires in (?P<left>(?:[7-9]|[12]\d) days)'   # 7 to 29 days
+    severity: warning
+    webhooks: [chat]
+
+  - name: certificate-expires-now
+    files: [/var/log/cert-check.log]
+    pattern: 'certificate (?P<cn>\S+) expires in (?P<left>[0-6] days?)'   # 0 to 6 days
+    severity: critical
+    webhooks: [chat]

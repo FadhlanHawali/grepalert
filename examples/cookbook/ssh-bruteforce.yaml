@@ -1,0 +1,27 @@
+# Failed SSH logins: one alert per attacking address, and a summary of how many
+# more attempts it made. The template words summaries differently.
+#   in:  Oct 15 10:00:01 web-01 sshd[811]: Failed password for root from 203.0.113.9 port 50122 ssh2
+#   in:  Oct 15 10:00:02 web-01 sshd[811]: Failed password for root from 203.0.113.9 port 50124 ssh2
+#   in:  Oct 15 10:00:03 web-01 sshd[812]: Failed password for invalid user admin from 203.0.113.9 port 50126 ssh2
+#   in:  Oct 15 10:00:04 web-01 sshd[813]: Failed publickey for deploy from 198.51.100.23 port 40022 ssh2
+#   in:  Oct 15 10:00:05 web-01 sshd[814]: Accepted publickey for deploy from 198.51.100.23 port 40030 ssh2
+#   out: {"text": "Failed SSH login as root from 203.0.113.9"}
+#   out: {"text": "Failed SSH login as deploy from 198.51.100.23"}
+#   out: {"text": "2 more failed SSH logins from 203.0.113.9 in 15 minutes"}
+webhooks:
+  - name: security
+    url: ${SECURITY_WEBHOOK_URL}
+    template: >-
+      {"text": {{ if eq .Kind "summary" -}}
+        {{ json (printf "%d more failed SSH logins from %s in 15 minutes" .Suppressed .Groups.ip) }}
+      {{- else -}}
+        {{ json (printf "Failed SSH login as %s from %s" .Groups.user .Groups.ip) }}
+      {{- end }}}
+
+rules:
+  - name: ssh-failed-login
+    files: [/var/log/auth.log]
+    pattern: 'sshd\[\d+\]: Failed (?:password|publickey) for (?:invalid user )?(?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3}) port \d+'
+    severity: warning
+    webhooks: [security]
+    suppress: {window: 15m, group_by: ip}   # per address: the first attempt, then a count

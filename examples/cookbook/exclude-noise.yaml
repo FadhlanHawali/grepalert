@@ -1,0 +1,24 @@
+# Errors, minus the noise. Go's regular expressions (RE2) have no lookahead
+# like (?!...); use exclude instead: a line that matches exclude never alerts.
+#   in:  2026-10-15 10:00:01 ERROR payment provider returned 503
+#   in:  2026-10-15 10:00:02 ERROR GET /healthz: upstream not ready
+#   in:  2026-10-15 10:00:03 WARN read tcp 10.0.0.5:443: ECONNRESET (client disconnected)
+#   in:  2026-10-15 10:00:04 Exception in worker 3: NullPointerException
+#   in:  2026-10-15 10:00:05 INFO errors_total=0
+#   in:  2026-10-15 10:00:06 ERROR deprecated config key "timeout_ms", use "timeout"
+#   out: {"text": "2026-10-15 10:00:01 ERROR payment provider returned 503"}
+#   out: {"text": "2026-10-15 10:00:04 Exception in worker 3: NullPointerException"}
+webhooks:
+  - name: chat
+    url: ${CHAT_WEBHOOK_URL}
+    template: '{"text": {{ json .Line }}}'
+
+rules:
+  - name: errors-without-noise
+    files: ["/var/log/app/*.log"]
+    # \b keeps "errors_total" from counting as "error"; (?i) ignores case.
+    pattern: '(?i)\b(?:error|exception|fatal)\b'
+    # Known noise: health checks, clients that went away, deprecation notices.
+    exclude: '(?i)/healthz|/readyz|ECONNRESET|client disconnected|deprecated'
+    severity: critical
+    webhooks: [chat]

@@ -1,0 +1,38 @@
+# Rich payloads: an Opsgenie alert (deduplicated by rule and reason, with the
+# API key in a header) and a Slack message laid out with Block Kit fields.
+#   in:  2026-10-15 10:00:01 ERROR order=88123 payment failed: gateway timeout after 30s
+#   out: {"message": "payment-failed: gateway timeout after 30s", "alias": "payment-failed/gateway timeout after 30s", "priority": "P1", "description": "2026-10-15 10:00:01 ERROR order=88123 payment failed: gateway timeout after 30s", "tags": ["grepalert", "payment-failed"], "details": {"host": "playground", "order": "88123"}}
+#   out: {"blocks": [{"type": "header", "text": {"type": "plain_text", "text": "payment-failed (critical)"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Order*\n88123"}, {"type": "mrkdwn", "text": "*Reason*\ngateway timeout after 30s"}]}]}
+webhooks:
+  - name: opsgenie
+    url: https://api.opsgenie.com/v2/alerts
+    headers:
+      Authorization: GenieKey ${OPSGENIE_API_KEY}
+    template: |
+      {
+        "message": {{ json (printf "%s: %s" .Rule .Groups.reason) }},
+        "alias": {{ json (printf "%s/%s" .Rule .Groups.reason) }},
+        "priority": {{ if eq .Severity "critical" }}"P1"{{ else }}"P3"{{ end }},
+        "description": {{ json .Line }},
+        "tags": ["grepalert", {{ json .Rule }}],
+        "details": {"host": {{ json .Host }}, "order": {{ json .Groups.order }}}
+      }
+
+  - name: slack-blocks
+    url: ${SLACK_WEBHOOK_URL}
+    template: |
+      {"blocks": [
+        {"type": "header", "text": {"type": "plain_text", "text": {{ json (printf "%s (%s)" .Rule .Severity) }}}},
+        {"type": "section", "fields": [
+          {"type": "mrkdwn", "text": {{ json (printf "*Order*\n%s" .Groups.order) }}},
+          {"type": "mrkdwn", "text": {{ json (printf "*Reason*\n%s" .Groups.reason) }}}
+        ]}
+      ]}
+
+rules:
+  - name: payment-failed
+    files: [/var/log/shop/app.log]
+    pattern: 'order=(?P<order>\d+) payment failed: (?P<reason>.+)'
+    severity: critical
+    webhooks: [opsgenie, slack-blocks]
+    suppress: {window: 10m, group_by: reason}
