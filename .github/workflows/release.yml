@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release
+      actions: write  # start the docs workflow
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +79,13 @@ jobs:
           # v0.2.0-rc.1 and similar are marked as pre-releases
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist/*
+
+      # The docs site lists release notes of tagged versions only: rebuild it
+      # from main so this one appears (Pages deploys from main).
+      - name: Update the documentation site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --ref main || echo "::warning::could not start the docs workflow"
 
   images:
     runs-on: ubuntu-latest

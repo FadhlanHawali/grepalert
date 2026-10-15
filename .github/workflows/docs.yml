@@ -1,0 +1,72 @@
+name: Docs
+
+# Builds the documentation site from README.md and docs/ and publishes it to
+# GitHub Pages: https://fadhlanhawali.github.io/grepalert/
+#
+# One-time setup: repository Settings → Pages → Source: "GitHub Actions".
+#
+# Pull requests only build it (strictly: a broken link fails the build). The
+# release workflow starts this one after tagging, so new release notes appear.
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - docs/**
+      - examples/**
+      - mkdocs.yml
+      - scripts/build_site.py
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - README.md
+      - docs/**
+      - mkdocs.yml
+      - scripts/build_site.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags: only released versions get release notes on the site
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Build the site
+        run: |
+          pip install -r docs/requirements.txt
+          python scripts/build_site.py
+          mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

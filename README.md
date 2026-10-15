@@ -4,6 +4,8 @@
 
 Tail a file or the pods a Kubernetes label selector picks, match a pattern, post a clean message to Slack, Teams or any webhook. Run it on one server, or manage a whole fleet from the dashboard.
 
+📖 **Documentation: [fadhlanhawali.github.io/grepalert](https://fadhlanhawali.github.io/grepalert/)**
+
 **On its own.** One agent and a rules file on the server is all it takes:
 
 ![A standalone agent: it reads rules.yaml from the server, matches a log line, pulls out values and posts the message straight to the webhook; editing rules.yaml reloads it without a restart; repeats are suppressed and summed up once](docs/assets/standalone.gif)
@@ -180,7 +182,7 @@ All of it in detail: [Install](docs/install.md).
 
 ## Documentation
 
-Read in this order, or jump to what you need.
+Also on the documentation site, with search: [fadhlanhawali.github.io/grepalert](https://fadhlanhawali.github.io/grepalert/). Read in this order, or jump to what you need.
 
 **Setting up**
 1. [Install](docs/install.md): binaries, running the agent as a service, containers, building from source.

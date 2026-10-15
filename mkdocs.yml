@@ -1,0 +1,94 @@
+# The documentation site, published to GitHub Pages by .github/workflows/docs.yml.
+#
+#   pip install -r docs/requirements.txt
+#   python scripts/build_site.py && mkdocs serve      # preview on http://127.0.0.1:8000
+#
+# The pages come from README.md and docs/ (scripts/build_site.py turns them
+# into site-src/); edit those, not site-src/.
+site_name: grepalert
+site_url: https://fadhlanhawali.github.io/grepalert/
+site_description: Alerts from your logs in five minutes. No Loki, no Elasticsearch, no database.
+repo_url: https://github.com/FadhlanHawali/grepalert
+repo_name: FadhlanHawali/grepalert
+copyright: grepalert is licensed under the Apache License 2.0
+
+docs_dir: site-src
+site_dir: site
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/text-search
+  favicon: assets/favicon.svg
+  features:
+    - navigation.footer          # previous / next at the bottom of each page
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: install.md
+      - Demo walkthrough: demo.md
+  - Configuration:
+      - agent.yaml: config-agent.md
+      - rules.yaml: config-rules.md
+      - dashboard.yaml: config-dashboard.md
+  - Guides:
+      - Writing rules: rules.md
+      - Running agents: agents.md
+      - Dashboard and groups: dashboard.md
+      - Safe rule rollout: rollout.md
+      - Fleet alerting: fleet-alerting.md
+      - Kubernetes: kubernetes.md
+      - Sign-in, roles and security: security.md
+  - Reference:
+      - Agent API: api.md
+      - Memory and performance: performance.md
+  - Project:
+      - Release notes: releases/index.md
+      - Development: development.md
+      - Releasing: releasing.md
+
+not_in_nav: |
+  /releases/v*.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn

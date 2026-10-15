@@ -39,3 +39,24 @@ make ui-dev                                  # UI on http://localhost:5173, call
 ```
 
 Type-check with `cd ui && npm run typecheck`.
+
+## The documentation site
+
+The site at [fadhlanhawali.github.io/grepalert](https://fadhlanhawali.github.io/grepalert/) is built from the README and `docs/` with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/). Edit those Markdown files, and keep them readable on GitHub too.
+
+`scripts/build_site.py` prepares them for the site:
+- the README becomes the home page
+- links to repository files become GitHub links
+- release notes of tagged versions are published
+
+Navigation is in `mkdocs.yml`; add new pages there.
+
+To preview it with live reload on http://127.0.0.1:8000:
+
+```bash
+pip install -r docs/requirements.txt
+python scripts/build_site.py && mkdocs serve
+```
+
+After editing a page, run `build_site.py` again. `mkdocs build --strict` fails on any broken link or anchor; CI runs it on every pull request. `go test ./examples` checks the links on GitHub too, and that the example configs load.
+

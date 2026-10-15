@@ -11,3 +11,7 @@ audit.log.*
 # Built web UI (make ui); embedded into the dashboard binary
 /internal/dashboard/web/dist/
 /ui/node_modules/
+
+# Documentation site (scripts/build_site.py, mkdocs build)
+/site-src/
+/site/
