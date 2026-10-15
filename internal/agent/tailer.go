@@ -33,7 +33,7 @@ type Position struct {
 	FPLen int    `json:"fp_len"`
 	// TS is where a Kubernetes container log resumes: the time of the last
 	// line handled (files use Offset instead).
-	TS time.Time `json:"ts,omitempty"`
+	TS time.Time `json:"ts,omitzero"`
 }
 
 // fpSize is how much of a file's head is fingerprinted.

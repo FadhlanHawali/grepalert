@@ -1,0 +1,175 @@
+# grepalert on Kubernetes, the generic way: an app writes log FILES to a
+# persistent volume, and the agent mounts the same volume read-only and tails
+# them with ordinary `files:` rules, exactly as on a VM. No Kubernetes API
+# access or RBAC needed.
+#
+#   kubectl apply -f files-on-pv.yaml
+#   kubectl -n billing create secret generic grepalert-webhook --from-literal=url=https://hooks.slack.com/services/...
+#
+# Sharing one volume between two pods:
+#   - ReadWriteMany storage (NFS, EFS, Azure Files, CephFS...) works on any node.
+#   - ReadWriteOnce storage (most cloud disks, kind's local-path) can only be
+#     mounted on one node, so the agent is pinned to the app's node below
+#     (podAffinity). Keep that, or switch the claim to ReadWriteMany.
+#   - Or run the agent as a sidecar in the app's pod (same volume, no sharing
+#     rules): see docs/kubernetes.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: billing
+---
+# The app's log volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: billing-logs
+  namespace: billing
+spec:
+  accessModes: [ReadWriteOnce]      # ReadWriteMany if your storage class supports it
+  resources:
+    requests: {storage: 1Gi}
+---
+# The demo app: a batch job runner that writes /var/log/billing/batch.log and
+# rotates it like logrotate (rename, then a new file).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-batch
+  namespace: billing
+spec:
+  replicas: 1
+  strategy: {type: Recreate}        # a ReadWriteOnce volume can't be mounted twice during a rollout
+  selector:
+    matchLabels: {app: billing-batch}
+  template:
+    metadata:
+      labels: {app: billing-batch}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              cd /var/log/billing
+              i=0
+              while true; do
+                i=$((i+1))
+                ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                echo "$ts INFO invoice batch $i processed 120 invoices" >> batch.log
+                [ $((i % 9)) -eq 0 ] && echo "$ts ERROR batch $i FAILED: payment provider timeout" >> batch.log
+                [ $((i % 13)) -eq 0 ] && echo "$ts ERROR batch $i FAILED: ledger locked" >> batch.log
+                # Rotate every 200 batches, like logrotate.
+                if [ $((i % 200)) -eq 0 ]; then mv batch.log batch.log.1; fi
+                sleep 1
+              done
+          volumeMounts:
+            - {name: logs, mountPath: /var/log/billing}
+      volumes:
+        - name: logs
+          persistentVolumeClaim: {claimName: billing-logs}
+---
+# The agent's read positions, so a restart resumes where it stopped.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grepalert-state
+  namespace: billing
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 64Mi}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grepalert-rules
+  namespace: billing
+data:
+  agent.yaml: |
+    name: billing-logs
+    listen: "127.0.0.1:9300"          # local only: the probe calls it inside the pod
+    rules_file: /etc/grepalert/rules.yaml
+    state_file: /var/lib/grepalert/state.json
+  rules.yaml: |
+    webhooks:
+      - name: chat
+        url: ${WEBHOOK_URL}           # from the grepalert-webhook secret
+        template: '{"text": {{ json .Text }}}'
+
+    rules:
+      # Plain file rules, as on any server.
+      - name: batch-failed
+        files: ["/var/log/billing/*.log"]
+        pattern: 'ERROR batch (?P<batch>\d+) FAILED: (?P<reason>.+)'
+        severity: critical
+        webhooks: [chat]
+        suppress: {window: 10m, group_by: reason}
+
+      # The batch runner logs every second: alert if it goes quiet.
+      - name: batch-runner-silent
+        files: ["/var/log/billing/batch.log"]
+        absent: 'INFO invoice batch'
+        for: 2m
+        severity: critical
+        webhooks: [chat]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grepalert-agent
+  namespace: billing
+spec:
+  replicas: 1
+  strategy: {type: Recreate}        # its state volume is ReadWriteOnce
+  selector:
+    matchLabels: {app: grepalert-agent}
+  template:
+    metadata:
+      labels: {app: grepalert-agent}
+    spec:
+      automountServiceAccountToken: false   # it reads files, not the Kubernetes API
+      # A ReadWriteOnce volume is mounted on one node only: run next to the app.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {app: billing-batch}
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534                # lets the agent write its state volume
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: agent
+          image: ghcr.io/fadhlanhawali/grepalert-agent:latest
+          args: ["-config", "/etc/grepalert/agent.yaml"]
+          env:
+            - name: WEBHOOK_URL
+              valueFrom:
+                secretKeyRef: {name: grepalert-webhook, key: url}
+          volumeMounts:
+            - {name: config, mountPath: /etc/grepalert, readOnly: true}
+            - {name: logs, mountPath: /var/log/billing, readOnly: true}
+            - {name: state, mountPath: /var/lib/grepalert}
+          livenessProbe:
+            exec:
+              command: [wget, -qO-, http://127.0.0.1:9300/healthz]
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: config
+          configMap: {name: grepalert-rules}
+        - name: logs
+          persistentVolumeClaim: {claimName: billing-logs, readOnly: true}
+        - name: state
+          persistentVolumeClaim: {claimName: grepalert-state}

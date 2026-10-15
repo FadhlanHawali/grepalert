@@ -126,7 +126,7 @@ Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselv
 | [Demo walkthrough](docs/demo.md) | The Docker Compose demo, step by step |
 | [Agents](docs/agents.md) | Enrolling agents, labels, files an agent keeps on disk, groups, the dashboard being down, log rotation, restarts |
 | [Dashboard](docs/dashboard.md) | Agents and groups, rules from the UI or GitHub/GitLab, how changes reach agents |
-| [Kubernetes](docs/kubernetes.md) | Following the logs of pods picked by a label selector: rules, deployment, permissions |
+| [Kubernetes](docs/kubernetes.md) | Pod logs picked by a label selector, or log files on a shared volume, as on a VM |
 | [Rules](docs/rules.md) | Rule format, suppression, absence rules, webhook payloads and templates, extracting values from a line |
 | [Safe rule rollout](docs/rollout.md) | Versions and rollback, staged rollout, dry run, per-machine local rules |
 | [Fleet-level alerting](docs/fleet-alerting.md) | One alert across many hosts, silences, agent-down alerts |
