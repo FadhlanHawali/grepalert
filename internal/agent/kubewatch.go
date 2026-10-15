@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // kubeWatcher follows the logs of the pods that rules select with a

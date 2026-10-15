@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/agent"
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/agent"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // TestCookbook runs every recipe in cookbook/ through the real engine: the

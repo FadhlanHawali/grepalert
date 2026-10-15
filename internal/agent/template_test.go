@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/alert"
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/alert"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // A named capture group picks a value out of the line, and the webhook

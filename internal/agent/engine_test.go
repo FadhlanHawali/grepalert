@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 const testRules = `

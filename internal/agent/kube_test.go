@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // fakeKube is a tiny Kubernetes API: a pod list and follow-able logs.

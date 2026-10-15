@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 const maxRulesBody = 1 << 20

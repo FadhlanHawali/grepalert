@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fadhlanhawali/grepalert/internal/agent"
+	"github.com/opreklabs/grepalert/internal/agent"
 )
 
 const groupRules = `webhooks:

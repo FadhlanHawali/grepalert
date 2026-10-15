@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/alert"
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/alert"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // Simulate runs sample log lines through a rule set with the real matching

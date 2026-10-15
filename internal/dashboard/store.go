@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // AgentRecord is an agent the dashboard manages. It is either:

@@ -11,7 +11,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // Kinds of alert.

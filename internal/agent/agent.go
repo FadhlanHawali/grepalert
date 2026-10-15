@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
-	"github.com/fadhlanhawali/grepalert/internal/version"
+	"github.com/opreklabs/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/version"
 )
 
 // Version is the release version (set at build time, see internal/version).

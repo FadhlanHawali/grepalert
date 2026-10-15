@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/fadhlanhawali/grepalert/internal/rules"
+	"github.com/opreklabs/grepalert/internal/rules"
 )
 
 // A dry run replays the last part of the agent's log files through a
