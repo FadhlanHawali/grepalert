@@ -19,7 +19,7 @@ theme:
   name: material
   icon:
     repo: fontawesome/brands/github
-    logo: material/text-search
+  logo: assets/logo-white.svg
   favicon: assets/favicon.svg
   features:
     - navigation.footer          # previous / next at the bottom of each page

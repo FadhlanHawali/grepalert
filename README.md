@@ -1,6 +1,8 @@
-# grepalert
+<p align="center"><img src="docs/assets/logo.svg" width="88" height="88" alt="grepalert logo"></p>
 
-**Alerts from your logs in five minutes. No Loki, no Elasticsearch, no database.**
+<h1 align="center">grepalert</h1>
+
+<p align="center"><b>Alerts from your logs in five minutes. No Loki, no Elasticsearch, no database.</b></p>
 
 Tail a file or the pods a Kubernetes label selector picks, match a pattern, post a clean message to Slack, Teams or any webhook. Run it on one server, or manage a whole fleet from the dashboard.
 

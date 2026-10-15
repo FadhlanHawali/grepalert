@@ -21,6 +21,7 @@ REPO = "https://github.com/FadhlanHawali/grepalert"
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 OUT = os.path.join(ROOT, "site-src")
 LINK = re.compile(r"\]\(([^)\s]+)\)")
+SRC = re.compile(r'(src|href)="([^"]+)"')
 
 
 def rewrite(text, src_dir, out_dir):
@@ -46,7 +47,12 @@ def rewrite(text, src_dir, out_dir):
         rel = os.path.relpath(site_path, out_dir or ".").replace("\\", "/")
         return f"]({rel}{anchor})"
 
-    return LINK.sub(fix, text)
+    def fix_html(m):
+        # Raw HTML (e.g. the README's logo): same rules as Markdown links.
+        new = fix(re.match(r"\]\((.+)\)", "](" + m.group(2) + ")"))
+        return f'{m.group(1)}="{new[2:-1]}"'
+
+    return SRC.sub(fix_html, LINK.sub(fix, text))
 
 
 def drop_nav_line(text):
