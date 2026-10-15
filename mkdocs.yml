@@ -21,7 +21,11 @@ theme:
     repo: fontawesome/brands/github
   logo: assets/logo-white.svg
   favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
+    - navigation.tabs            # sections as tabs under the header
     - navigation.footer          # previous / next at the bottom of each page
     - navigation.sections
     - navigation.top
@@ -31,16 +35,18 @@ theme:
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: blue
-      accent: blue
+      primary: custom
+      accent: custom
       toggle: {icon: material/weather-night, name: Dark mode}
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: blue
-      accent: blue
+      primary: custom
+      accent: custom
       toggle: {icon: material/weather-sunny, name: Light mode}
 
 nav:
@@ -69,6 +75,15 @@ nav:
       - Development: development.md
       - Releasing: releasing.md
 
+extra_css:
+  - assets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/FadhlanHawali/grepalert
+  generator: false
+
 not_in_nav: |
   /releases/v*.md
 
@@ -84,6 +99,11 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 validation:
   nav:

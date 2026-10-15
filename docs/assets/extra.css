@@ -1,0 +1,219 @@
+/* The documentation site's look (mkdocs.yml: extra_css). Brand colour is the
+   logo's blue. */
+
+:root,
+[data-md-color-scheme="default"] {
+  --ga-blue: #2f6fed;
+  --ga-blue-dark: #1f54c4;
+  --md-primary-fg-color: #2f6fed;
+  --md-primary-fg-color--light: #5b8df2;
+  --md-primary-fg-color--dark: #1f54c4;
+  --md-accent-fg-color: #1f54c4;
+  --md-typeset-a-color: #2563eb;
+  --ga-hero-bg: linear-gradient(180deg, #eef3ff 0%, rgba(238, 243, 255, 0) 100%);
+  --ga-card-border: #e3e8f2;
+  --ga-code-bg: #f6f8fc;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 222;
+  --md-default-bg-color: #0d1220;
+  --md-default-bg-color--light: #121a2c;
+  --md-primary-fg-color: #121a2c;
+  --md-primary-fg-color--light: #1a2440;
+  --md-primary-fg-color--dark: #0a0f1c;
+  --md-accent-fg-color: #7aa5ff;
+  --md-typeset-a-color: #7aa5ff;
+  --md-code-bg-color: #131c30;
+  --md-footer-bg-color: #0a0f1c;
+  --md-footer-bg-color--dark: #070b15;
+  --ga-hero-bg: radial-gradient(ellipse at top, rgba(47, 111, 237, 0.22) 0%, rgba(13, 18, 32, 0) 70%);
+  --ga-card-border: #222c45;
+  --ga-code-bg: #131c30;
+}
+
+/* Header and tabs: one solid band in light mode, a hairline in dark mode. */
+.md-header,
+.md-tabs {
+  box-shadow: none;
+}
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  border-bottom: 1px solid #1d2740;
+}
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.md-tabs__link {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+/* Text */
+.md-typeset {
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+.md-typeset h1 {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset h3 {
+  font-weight: 650;
+}
+
+/* Code */
+.md-typeset pre > code {
+  border-radius: 0.5rem;
+}
+.md-typeset .highlight,
+.md-typeset pre {
+  border-radius: 0.5rem;
+}
+.md-typeset :not(pre) > code {
+  border-radius: 0.3rem;
+  padding: 0.05em 0.35em;
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--ga-card-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  font-size: 0.75rem;
+  box-shadow: none;
+}
+.md-typeset table:not([class]) th {
+  background: var(--ga-code-bg);
+  font-weight: 650;
+}
+
+/* Setting names in the first column stay on one line. */
+.md-typeset table:not([class]) td:first-child code {
+  white-space: nowrap;
+}
+
+/* Images (the animations) */
+.md-typeset img[src$=".gif"] {
+  border-radius: 0.6rem;
+  border: 1px solid var(--ga-card-border);
+}
+
+/* Buttons */
+.md-typeset .md-button {
+  border-radius: 0.5rem;
+  font-weight: 600;
+  padding: 0.55em 1.4em;
+  margin: 0.25rem 0.2rem;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: #a9c4ff;
+  border-color: #3a4f80;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #fff;
+  border-color: #7aa5ff;
+  background: rgba(122, 165, 255, 0.12);
+}
+.md-typeset .md-button--primary {
+  background: var(--ga-blue);
+  border-color: var(--ga-blue);
+  color: #fff;
+}
+.md-typeset .md-button--primary:hover {
+  background: var(--ga-blue-dark);
+  border-color: var(--ga-blue-dark);
+}
+
+/* Home page hero */
+.ga-hero {
+  text-align: center;
+  margin: 0 -1.2rem 1.5rem;
+  padding: 3rem 1.2rem 2.2rem;
+  background: var(--ga-hero-bg);
+  border-radius: 0 0 1rem 1rem;
+}
+/* The hero starts right under the header. */
+.md-main__inner:has(.ga-hero) {
+  margin-top: 0;
+}
+.md-content__inner:has(> .ga-hero) {
+  padding-top: 0;
+}
+.md-content__inner:has(> .ga-hero)::before {
+  display: none;
+}
+.md-typeset .ga-hero h1 .headerlink {
+  display: none;
+}
+.md-typeset .ga-hero p:first-child {
+  margin: 0;
+}
+.ga-hero__logo {
+  width: 76px;
+  height: 76px;
+  filter: drop-shadow(0 8px 20px rgba(47, 111, 237, 0.35));
+}
+.md-typeset .ga-hero h1 {
+  font-size: 2.6rem;
+  margin: 0.8rem 0 0.4rem;
+}
+.ga-hero__tagline {
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1.45;
+  margin: 0 auto 0.8rem;
+  max-width: 34rem;
+}
+.ga-hero__lead {
+  font-size: 0.9rem;
+  color: var(--md-default-fg-color--light);
+  margin: 0 auto 1.4rem;
+  max-width: 38rem;
+}
+
+/* Feature cards (Material's grid cards, tuned) */
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--ga-card-border);
+  border-radius: 0.75rem;
+  padding: 1rem 1.1rem;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--ga-blue);
+  box-shadow: none;
+  transform: translateY(-2px);
+}
+.md-typeset .grid.cards .lg {
+  color: var(--ga-blue);
+}
+[data-md-color-scheme="slate"] .md-typeset .grid.cards .lg {
+  color: #7aa5ff;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-typeset .grid.cards > ul {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media screen and (max-width: 44.9375em) {
+  .ga-hero {
+    margin: 0 -0.8rem 1rem;
+    padding: 2rem 1rem 1.6rem;
+  }
+  .md-typeset .ga-hero h1 {
+    font-size: 2rem;
+  }
+  .ga-hero__tagline {
+    font-size: 1.05rem;
+  }
+}

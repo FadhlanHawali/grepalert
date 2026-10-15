@@ -3,7 +3,8 @@
 
 The Markdown in README.md and docs/ is the single source; it is written to
 read well on GitHub. For the site this script:
-  - makes README.md the home page (index.md),
+  - makes README.md the home page (index.md), with a hero and feature
+    cards in place of its GitHub-only header,
   - turns links to files outside docs/ (examples/, LICENSE, ...) into links
     to those files on GitHub,
   - drops the "← Documentation · Previous · Next" line at the top of each
@@ -55,6 +56,72 @@ def rewrite(text, src_dir, out_dir):
     return SRC.sub(fix_html, LINK.sub(fix, text))
 
 
+HOME_TOP = """---
+hide: [navigation]
+---
+
+<div class="ga-hero" markdown>
+<img src="docs/assets/logo.svg" class="ga-hero__logo" alt="">
+<h1>grepalert</h1>
+<p class="ga-hero__tagline">Alerts from your logs in five minutes.<br>No Loki, no Elasticsearch, no database.</p>
+<p class="ga-hero__lead">{lead}</p>
+
+[Get started](docs/install.md){{ .md-button .md-button--primary }}
+[Rule cookbook](docs/cookbook.md){{ .md-button }}
+[GitHub](https://github.com/FadhlanHawali/grepalert){{ .md-button }}
+</div>
+
+<div class="grid cards" markdown>
+
+-   :material-file-search-outline:{{ .lg .middle }} **Files or Kubernetes pods**
+
+    ---
+
+    Follows log files through rotation, or the pods a label selector picks. Positions are saved, so nothing is lost or sent twice.
+
+-   :material-message-text-outline:{{ .lg .middle }} **Your message, not the raw line**
+
+    ---
+
+    Pull values out of the line and write the alert yourself: *"Critical, DS1 is suspended"*, for Slack, Teams, Opsgenie or any webhook.
+
+-   :material-bell-sleep-outline:{{ .lg .middle }} **No alert storms**
+
+    ---
+
+    Suppression windows with one summary afterwards, and the same alert from many servers combined into one.
+
+-   :material-source-branch-check:{{ .lg .middle }} **Safe rule changes**
+
+    ---
+
+    Versions and rollback, a dry run on real logs, and staged rollout that stops by itself when a change misbehaves.
+
+-   :material-feather:{{ .lg .middle }} **Small by design**
+
+    ---
+
+    Two single-file programs, no database, no queue. An agent stays around 20 MB of memory, even at 100 MB/s of logs.
+
+-   :material-shield-account-outline:{{ .lg .middle }} **Ready for a team**
+
+    ---
+
+    Rules from GitHub or GitLab, sign-in with SSO, roles and an audit log in the dashboard.
+
+</div>
+"""
+
+
+def home(readme):
+    """The README with its GitHub-only header (centred logo and title, the
+    link to this site) replaced by the site's hero and feature cards."""
+    lines = readme.split("\n")
+    end = next(i for i, l in enumerate(lines) if l.startswith("📖"))
+    lead = next(l for l in lines[:end] if l and not l.startswith("<"))
+    return HOME_TOP.format(lead=lead) + "\n".join(lines[end + 1:])
+
+
 def drop_nav_line(text):
     lines = text.split("\n")
     if lines and lines[0].startswith("[← Documentation"):
@@ -89,7 +156,7 @@ def main():
                     ignore=shutil.ignore_patterns("*.py", "__pycache__"))
 
     with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-        write("index.md", rewrite(f.read(), ".", ""))
+        write("index.md", rewrite(home(f.read()), ".", ""))
 
     for name in sorted(os.listdir(os.path.join(ROOT, "docs"))):
         if not name.endswith(".md"):
