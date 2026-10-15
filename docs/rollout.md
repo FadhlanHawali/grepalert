@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Dashboard and groups](dashboard.md) · Next: [Fleet alerting →](fleet-alerting.md)
 
 # Safe rule rollout
 

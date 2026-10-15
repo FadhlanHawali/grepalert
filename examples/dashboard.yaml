@@ -1,40 +1,55 @@
-# grepalert dashboard settings. ${VAR} is expanded from the environment.
-# Agents and groups are added in the web UI ("Connect agent", "New group") and
-# saved to data_file.
-listen: ":9400"
-auth:
-  # Built-in local admin (break-glass). More local users: UI → Users & access.
-  username: admin
-  password: ${GREPALERT_DASHBOARD_PASSWORD}
-  # Single sign-on (OpenID Connect): Okta, Entra ID, Google, Keycloak, ...
-  # oidc:
-  #   name: Okta
-  #   issuer: https://example.okta.com/oauth2/default
-  #   client_id: 0oa1b2c3d4
-  #   client_secret: ${OIDC_CLIENT_SECRET}
-  #   redirect_url: https://grepalert.example.com/auth/callback
-  #   # Only when the dashboard reaches the provider at another address than
-  #   # browsers do (Docker, Kubernetes): discovery, keys and tokens use this.
-  #   # discovery_url: http://keycloak:8080/realms/ops
-  #   groups_claim: groups
-  #   allowed_domains: [example.com]
-  # Always-admins: emails, usernames or group:<IdP group>
-  # admins: ["group:platform-admins"]
-  session_ttl: 12h
+# grepalert dashboard configuration: every setting, with its default.
+# Reference: docs/config-dashboard.md
+#
+#   grepalert-dashboard -config /etc/grepalert/dashboard.yaml
+#
+# $VAR and ${VAR} are replaced with environment variables when this file is
+# loaded. Agents, groups, rules, users and alert settings are managed in the
+# web UI and saved to data_file, not here.
 
-# Audit log (JSON lines, rotated at 20 MB). Default: audit.log next to data_file.
-# audit_file: /var/lib/grepalert-dashboard/audit.log
-
-# Agents, groups and group rules. Contains agent/git tokens: keep it private.
-data_file: /var/lib/grepalert-dashboard/data.json
-
-# How often group members are checked; agents that drifted or came back
-# online get the group's rules again.
-reconcile_interval: 30s
-
-# Fixed enrollment token for automation (Ansible, Terraform, images). Tokens
-# can also be created and revoked in the UI under "Agent enrollment".
-# enrollment_token: ${GREPALERT_ENROLL_TOKEN}
-
+# --- Web server ----------------------------------------------------------
+listen: ":9400"                 # default ":9400"
+# Serve HTTPS directly, or put the dashboard behind a reverse proxy.
 # tls_cert: /etc/grepalert/dashboard.crt
 # tls_key: /etc/grepalert/dashboard.key
+
+# --- Sign-in -------------------------------------------------------------
+# With no sign-in configured, anyone who can reach the dashboard is an admin
+# (fine for a local try-out only). Use any combination of the options below.
+auth:
+  # A built-in admin account, e.g. for break-glass access when SSO is down.
+  # Set both or neither. More local accounts: web UI, Users & access.
+  username: admin
+  password: ${GREPALERT_DASHBOARD_PASSWORD}
+
+  # Single sign-on with OpenID Connect: Okta, Entra ID, Google, Keycloak...
+  # oidc:
+  #   name: Okta                                       # sign-in button text; default "single sign-on"
+  #   issuer: https://example.okta.com/oauth2/default  # required
+  #   client_id: 0oa1b2c3d4                            # required
+  #   client_secret: ${OIDC_CLIENT_SECRET}
+  #   redirect_url: https://grepalert.example.com/auth/callback   # required: this dashboard's callback
+  #   scopes: [openid, email, profile]                 # default
+  #   groups_claim: groups                             # ID-token claim with the user's groups (default)
+  #   allowed_domains: [example.com]                   # optional: only these email domains
+  #   # Only when the dashboard reaches the provider at another address than
+  #   # browsers do (Docker, Kubernetes):
+  #   # discovery_url: http://keycloak:8080/realms/ops
+
+  # Always admins: emails, usernames, or group:<identity-provider group>.
+  # admins: ["group:platform-admins", "alice@example.com"]
+  session_ttl: 12h              # how long a sign-in lasts
+  # cookie_secure: false        # force the Secure cookie flag (default: on when served over HTTPS)
+
+# --- Data ----------------------------------------------------------------
+# Agents, groups, rule versions, users and settings. Holds tokens: it is
+# written with 0600 permissions; keep it private and back it up.
+data_file: /var/lib/grepalert-dashboard/data.json     # default: dashboard-data.json
+# Who changed what (JSON lines, rotated at 20 MB). Default: audit.log next to data_file.
+# audit_file: /var/lib/grepalert-dashboard/audit.log
+
+# --- Agents --------------------------------------------------------------
+# A fixed token agents can enroll with, for automation (Ansible, Terraform,
+# images). Tokens can also be created and revoked in the web UI.
+# enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+reconcile_interval: 30s         # how often groups re-check their agents and push rules to those that drifted

@@ -1,0 +1,8 @@
+# The quick-start agent, now connected to the dashboard. The dashboard
+# manages its rules from then on.
+rules_file: rules.yaml
+labels:
+  role: demo
+dashboard:
+  url: http://localhost:9400
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}

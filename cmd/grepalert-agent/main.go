@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -57,8 +58,8 @@ func main() {
 
 	var srv *http.Server
 	if cfg.Listen != "off" {
-		if cfg.Token == "" {
-			log.Warn("no token configured: the agent API is unauthenticated")
+		if cfg.Token == "" && !loopbackOnly(cfg.Listen) {
+			log.Warn("no token configured: anyone who can reach the agent API can change its rules", "listen", cfg.Listen)
 		}
 		srv = a.Server()
 		go func() {
@@ -85,4 +86,18 @@ func main() {
 		srv.Shutdown(shutdownCtx)
 	}
 	log.Info("stopped")
+}
+
+// loopbackOnly reports whether addr only accepts connections from this
+// machine (127.0.0.1, ::1 or localhost).
+func loopbackOnly(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

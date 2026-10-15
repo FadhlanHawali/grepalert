@@ -1,38 +1,55 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Running agents](agents.md) · Next: [Safe rule rollout →](rollout.md)
 
-# Dashboard
+# Dashboard and groups
 
-Managing agents and groups, and the ways rules reach agents.
+The dashboard manages many agents in one place. Its own settings are in [dashboard.yaml](config-dashboard.md); everything below is done in its web UI and saved to its `data_file`.
 
-## Agents and groups
+## The pages
 
-Agents and groups are managed in the UI and saved to `data_file`. That file holds direct-agent tokens, git tokens and enrollment-token hashes, so it is written with `0600` permissions; keep it private. Token fields also accept `${ENV_VAR}`, which is read from the dashboard's environment when the dashboard uses the token.
+| Page | What it's for |
+|---|---|
+| **All agents** / **Ungrouped** | Every agent with its status: online, rules version, files, alerts, memory. Click one for its details: overview, rules, events, test a line, settings. |
+| **Groups** | One page per group: its agents, rules, history, and a staged rollout if one is running. |
+| **Alert history** | Every alert the dashboard handled, with its status: sent, silenced, failed, dropped. |
+| **Silences** | Mute alerts during maintenance. |
+| **Tools → Rule playground** | Try rules on sample log lines; nothing is saved or sent. |
+| **Agent enrollment** | Tokens agents enroll with. Admins only. |
+| **Users & access** | Local accounts, and roles for users and identity-provider groups. Admins only. |
+| **Audit log** | Who changed what. Admins only. |
+| **Settings** | The ops webhook for agent-down alerts, and the agent-down delay. Admins only. |
 
-- **Connect agent** (direct mode) asks for the agent's URL and token. Use it when the dashboard can reach the agent. **Test connection** shows what the agent reports about itself. If you leave the name empty, the agent's own `name` is used. If the agent isn't reachable yet, you can still choose **Save anyway**.
-- **Group**: a set of agents that share one rule set. The rules come from one of two places:
-  - **This dashboard**: write the rules in the group's Rules tab. You can start from an example or from a copy of an agent's current rules. **Save & push** applies them to every member.
-  - **A git repository**: GitHub (including Enterprise), GitLab (including self-hosted), or a raw URL. The dashboard fetches on a schedule or when you click **Sync from git**. If the new content in git is invalid, it is rejected, and agents keep the last good version.
-- **Members**: an agent that joins a group gets the group's rules immediately. Members are managed: editing a member's rules directly is refused. Every `reconcile_interval` (30s by default), the dashboard re-pushes the group's rules to members that drifted, for example after someone edited the file by hand, or that came back online.
-- **Ungrouped agents** keep their own rules, and you edit them one agent at a time.
-- **Deleting a group** makes its agents ungrouped. They keep the rules they have.
+## Adding agents
 
-To check a rules file before shipping it (for example in CI on your rules repo):
+- **Agents that connect to the dashboard** (recommended) appear by themselves once they enroll. See [Running agents](agents.md#connected-to-a-dashboard).
+- **Connect agent** adds an agent by its address and token, when the dashboard can reach it. **Test connection** shows what the agent reports about itself. If the agent isn't running yet, **Save anyway** keeps it.
+
+## Groups
+
+A group is a set of agents that share one rule set. Create one with **New group**:
+
+| Setting | Meaning |
+|---|---|
+| **Name, description** | |
+| **Auto-add agents with labels** | e.g. `role=web, env=prod`: every connected agent with these labels joins, now and later. Leave it empty to add agents by hand. |
+| **Rules come from** | **This dashboard**: edit them in the group's Rules tab, starting from an example or a copy of an agent's rules. Or **a git repository**: GitHub (including Enterprise), GitLab (including self-hosted) or a raw URL, fetched on a schedule or when you click **Sync from git**. |
+| **Alerts across agents** | Combine the same alert from several agents into one: [fleet alerting](fleet-alerting.md). |
+| **Agent-down alerts go to** | A webhook for this group's agent-down and agent-back alerts; default: the one in Settings. |
+| **Rule changes** | Roll changes out in stages, and stop if alerts spike: [staged rollout](rollout.md). |
+
+**How members are kept in line:**
+- **Joining:** an agent that joins a group gets its rules at once.
+- **Direct edits are refused:** a member's rules can't be edited directly. Change the group's instead, or give that one machine [local rules](rules.md#rules-for-one-machine-local-rules).
+- **Drift is corrected:** every `reconcile_interval` (30 s), the group pushes its rules again to members that drifted (say, someone edited the file by hand) or came back online.
+- **Invalid git rules are rejected:** agents keep the last good version.
+
+**Deleting a group** makes its agents ungrouped. They keep the rules they have.
+
+**Checking rules in CI:** to check a rules file before it reaches a group, for example on your rules repository:
 
 ```bash
 grepalert-agent -check rules.yaml
 ```
 
+## Roles
 
-## Changing rules without restarting
-
-Every route below validates the new rules first. If validation fails, the agent keeps running the old rules and reports the error.
-
-1. **Edit the file.** The agent checks `rules_file` every `rescan_interval` (10s by default).
-2. **Dashboard, ungrouped agent.** Open the agent's Rules tab, edit, then click Validate and Save & apply.
-3. **Dashboard, group.** Edit the group's rules, or change them in git and sync. The change is pushed to every member, all at once or in stages ([Safe rule rollout](rollout.md)). Members that drift are corrected automatically.
-4. **API**: `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @rules.yaml http://agent:9300/api/v1/rules`
-5. **Local rules** in `local_rules_file` (or `PUT /api/v1/rules/local`) add rules for one machine on top of whatever routes 1-4 set.
-
-Agents write pushed rules to their `rules_file`, so the rules survive a restart.
-
-Tailers for files that are no longer referenced are stopped. Tailers for new files are started. Files that keep the same rules are not reopened, and their suppression windows carry on.
+What each user may do depends on their role: viewer, editor or admin, for one group or all of them. See [Sign-in, roles and security](security.md).

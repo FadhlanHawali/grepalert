@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Safe rule rollout](rollout.md) · Next: [Kubernetes →](kubernetes.md)
 
 # Fleet-level alerting
 

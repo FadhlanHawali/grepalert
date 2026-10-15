@@ -12,130 +12,204 @@ Tail a file or the pods a Kubernetes label selector picks, match a pattern, post
 
 ![How grepalert works: rules go from git through the dashboard to every agent; an agent matches a log line, pulls values out of it and sends your message to a webhook; the same alert from many servers becomes one; repeats are suppressed](docs/assets/how-it-works.gif)
 
-It is two static Go binaries with no database and no queue:
+## How it works
 
-| Binary | Runs on | Job |
+grepalert is two small programs, each a single static file with no database and no queue:
+
+| Program | Runs on | What it does |
 |---|---|---|
-| `grepalert-agent` | every server with logs | Tails files, matches rules, suppresses floods, sends webhooks. Rules hot-reload with no restart. |
-| `grepalert-dashboard` | anywhere | Web UI: connect agents, put them in groups that share one rule set (edited in the UI or synced from GitHub/GitLab), and monitor them. |
+| `grepalert-agent` | every server with logs | Follows log files (or Kubernetes pods), matches each line against your rules, and posts alerts to webhooks. Works on its own. |
+| `grepalert-dashboard` | anywhere, optional | A web UI for many agents: groups that share one rule set (edited in the UI or synced from git), safe rule rollout, one alert across many hosts, silences, sign-in with SSO and an audit log. |
+
+An agent needs two files:
+
+- **`agent.yaml`**: settings of the agent itself, such as where its rules are and whether to connect to a dashboard.
+- **`rules.yaml`**: what to watch (a file and a pattern) and where to send alerts (webhooks). This is the file you edit most.
 
 ```
-            GitHub / GitLab (rules.yaml)
-                       │  fetch (manual or every N min)
-                       ▼
- browser ──► grepalert-dashboard ──PUT /api/v1/rules──► grepalert-agent ──► webhook (Slack, Discord, …)
-             (agents, groups)  ◄── GET status / events ──       │
-                                                          tails /var/log/*.log
+ your logs ──► grepalert-agent ──► webhook (Slack, Teams, Discord, PagerDuty, …)
+                   ▲    │
+         rules     │    │ alerts (optional: through the dashboard,
+                   │    ▼          to combine them across hosts)
+             grepalert-dashboard ◄── rules from the UI or from GitHub/GitLab
 ```
 
-## When rules change, or the dashboard fails
+## Quick start: your first alert
 
-**Staged rollout.** A rule change can reach a group in stages. If the agents on the new version alert far more than the others, the rollout stops itself and everyone goes back. See [Safe rule rollout](docs/rollout.md).
+This takes about five minutes on Linux or macOS; Windows works the same with `grepalert-agent.exe`.
+
+**1. Get the agent.** Download it from [Releases](https://github.com/FadhlanHawali/grepalert/releases); other platforms and containers are in [Install](docs/install.md).
+
+```bash
+mkdir grepalert && cd grepalert
+curl -fsSL https://github.com/FadhlanHawali/grepalert/releases/download/v0.1.0/grepalert_0.1.0_linux_amd64.tar.gz | tar xz --strip-components=1
+```
+
+**2. Write `agent.yaml`.** This is the smallest useful one: rules from `rules.yaml` in this folder, and the agent's API on this machine only.
+
+```yaml
+rules_file: rules.yaml
+listen: "127.0.0.1:9300"
+```
+
+**3. Write `rules.yaml`.** One webhook, and one rule that alerts on lines containing `ERROR` in `app.log`:
+
+```yaml
+webhooks:
+  - name: chat
+    url: ${WEBHOOK_URL}                      # your Slack/Teams/Mattermost incoming webhook
+    template: '{"text": {{ json .Text }}}'
+
+rules:
+  - name: errors
+    files: [app.log]                         # the log to watch (here: app.log in this folder)
+    pattern: 'ERROR (?P<what>.+)'            # lines with ERROR; the rest of the line is captured
+    severity: critical
+    webhooks: [chat]
+    suppress: {window: 1m, group_by: what}   # the same error at most once a minute
+```
+
+`${WEBHOOK_URL}` is read from the environment, so the URL stays out of the file. No chat webhook at hand? Use a free test URL from a request bin such as webhook.site.
+
+**4. Run it, and write an error to the log:**
+
+```bash
+export WEBHOOK_URL=https://hooks.slack.com/services/...
+./grepalert-agent -config agent.yaml
+```
+
+```bash
+echo "2026-10-15 12:00:00 ERROR payment gateway timeout" >> app.log
+```
+
+Within a couple of seconds your chat shows:
+
+> CRITICAL [your-host] errors matched in app.log: 2026-10-15 12:00:00 ERROR payment gateway timeout
+
+**5. Change the rules while it runs.** Edit `rules.yaml` and save:
+- **Applied automatically:** the agent applies the new version within 10 seconds, with no restart, and logs `rules applied`.
+- **Mistakes are rejected:** a file with a mistake is not applied. The agent logs why and keeps running the previous rules.
+- **Check before saving:** run the same check yourself:
+
+```bash
+./grepalert-agent -check rules.yaml
+```
+
+From here:
+- **[Writing rules](docs/rules.md):** your own message built from the captured values (*"Critical, DS1 is suspended"*), suppression, and alerts when a line stops appearing.
+- **[Configuration reference](docs/config-agent.md):** every setting of `agent.yaml`.
+- **[Install](docs/install.md):** running the agent as a service.
+
+## Add the dashboard
+
+With more than a few servers, the dashboard manages their rules in one place. It also turns the same alert from many servers into one.
+
+**1. Start the dashboard.** It is in the same download. Its smallest useful `dashboard.yaml` has an admin account and an enrollment token, which agents use to join:
+
+```yaml
+listen: ":9400"
+data_file: dashboard-data.json
+auth:
+  username: admin
+  password: ${GREPALERT_DASHBOARD_PASSWORD}
+enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+```
+
+```bash
+export GREPALERT_DASHBOARD_PASSWORD=change-me-please GREPALERT_ENROLL_TOKEN=$(openssl rand -hex 16)
+./grepalert-dashboard -config dashboard.yaml
+```
+
+Open http://localhost:9400 and sign in as `admin`.
+
+**2. Connect the agent.** Give the agent a `dashboard` section and a label, then restart it with the same `GREPALERT_ENROLL_TOKEN` in its environment:
+
+```yaml
+rules_file: rules.yaml
+labels:
+  role: demo
+dashboard:
+  url: http://localhost:9400
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}
+```
+
+The agent **connects out** to the dashboard, so servers need no open port. It appears under **All agents**.
+
+**3. Manage its rules from a group:**
+1. Click **New group**, set *Auto-add agents with labels* to `role=demo`, and start from *A copy of the agent's current rules*.
+2. Every agent labelled `role=demo` (now and later) joins the group and runs its rules.
+3. Edit the rules in the group's **Rules** tab, or keep them in GitHub or GitLab and let the group sync them.
+
+**4. Change rules safely.**
+- **[Staged rollout](docs/rollout.md):** a change reaches a few agents first, and stops by itself if they start alerting far more than the others.
+- **Dry run:** replays the last hour of real logs through draft rules.
+- **History:** every version is kept, with one-click rollback.
 
 ![Staged rollout: a rule change goes to one agent first, is watched, then goes to half of the agents and then all; a bad change makes its first agent alert far more than the others, so the rollout stops, every agent goes back, and ops is told](docs/assets/staged-rollout.gif)
 
-**If the dashboard goes down.** Agents keep alerting. They work from the rules, read positions and silences on their own disk, even across a restart:
+**If the dashboard goes down,** agents keep alerting. They work from the rules, read positions and silences on their own disk, even across a restart:
 
 ![The dashboard goes down: the agent keeps running from its disk and, after 15 seconds, alerts the webhook directly while silenced rules stay silent; the agent restarts during the outage, resumes from its saved position so a line written meanwhile still alerts; the dashboard comes back and the agent reconnects on its own](docs/assets/dashboard-down.gif)
 
-## Install
+## Try everything with Docker Compose
 
-**Binaries.** Download an archive for Linux, macOS or Windows (amd64/arm64) from [Releases](https://github.com/FadhlanHawali/grepalert/releases). Each archive holds both programs plus example configs:
-
-```bash
-curl -fsSLO https://github.com/FadhlanHawali/grepalert/releases/download/v0.1.0/grepalert_0.1.0_linux_amd64.tar.gz
-tar xzf grepalert_0.1.0_linux_amd64.tar.gz && cd grepalert_0.1.0_linux_amd64
-./grepalert-agent -version
-```
-
-The dashboard's web UI is embedded in its binary, so each program is a single static file with no dependencies. `checksums.txt` on the release page lists the SHA-256 of every archive.
-
-**Containers.** Images for linux/amd64 and linux/arm64 are on GitHub Container Registry:
-- **Dashboard:** start it on http://localhost:9400 and sign in as `admin`:
-
-  ```bash
-  docker run -d --name grepalert-dashboard -p 9400:9400     -e GREPALERT_DASHBOARD_PASSWORD=change-me-please     -e GREPALERT_ENROLL_TOKEN=$(openssl rand -hex 16)     -v grepalert-dashboard:/var/lib/grepalert-dashboard     ghcr.io/fadhlanhawali/grepalert-dashboard:0.1.0
-  ```
-- **Agent, connected to that dashboard:** it enrolls itself and gets its rules from a group. Use the same enrollment token as the dashboard:
-
-  ```bash
-  docker run -d --name grepalert-agent     -e GREPALERT_DASHBOARD_URL=http://dashboard-host:9400     -e GREPALERT_ENROLL_TOKEN=<the same token>     -v /var/log:/var/log:ro -v grepalert-agent:/var/lib/grepalert     ghcr.io/fadhlanhawali/grepalert-agent:0.1.0
-  ```
-- **Agent, standalone:** put your `rules.yaml` in a folder and mount it at `/var/lib/grepalert`. It is reloaded when you edit it:
-
-  ```bash
-  docker run -d --name grepalert-agent     -e SLACK_WEBHOOK_URL=https://hooks.slack.com/...     -v $PWD/grepalert:/var/lib/grepalert -v /var/log:/var/log:ro     ghcr.io/fadhlanhawali/grepalert-agent:0.1.0
-  ```
-
-Both images read a built-in config driven by these environment variables ([agent](examples/container/agent.yaml), [dashboard](examples/container/dashboard.yaml)). Mount your own file at `/etc/grepalert/agent.yaml` or `/etc/grepalert/dashboard.yaml` for labels, SSO, TLS and everything else.
-
-**From source.** Building needs Go 1.26+ and, for the dashboard's UI, Node.js 20+:
+A complete demo includes:
+- the dashboard
+- three agents that join a group by label
+- rules from a stand-in git repository, with staged rollout
+- a log generator, and a page that shows the alerts as they arrive
 
 ```bash
-make build            # the web UI and both binaries, into bin/
-```
-
-The agent alone needs no Node.js: `go build ./cmd/grepalert-agent`.
-
-## Quick start
-
-**Agent**, on each server:
-
-```bash
-cp examples/agent.yaml examples/rules.yaml /etc/grepalert/
-export GREPALERT_AGENT_TOKEN=$(openssl rand -hex 16) SLACK_WEBHOOK_URL=https://hooks.slack.com/...
-grepalert-agent -config /etc/grepalert/agent.yaml
-```
-
-That is all a standalone agent needs: no dashboard required.
-
-**Changing a standalone agent's rules.** Edit `rules.yaml` and save. There is nothing to reload and no restart:
-- **Picking up changes:** the agent checks the file every `rescan_interval` (10 s by default) and applies a new version on its own. It logs `rules applied`, and files that the new rules add or drop are followed or released.
-- **Broken edits:** a file that fails validation is not applied. The agent logs `rules file reload failed, keeping previous rules` with the reason and keeps alerting with the last good rules. Fix the file and save again.
-- **Checking before you save:** validate a file first with the same check the agent runs:
-
-  ```bash
-  grepalert-agent -check /etc/grepalert/rules.yaml   # exit 0 and "OK: …", or exit 1 and the error
-  ```
-- **No file access:** `PUT /api/v1/rules` on the agent's API validates, saves and applies in one step (see [Agent API](docs/api.md)).
-- **Extra local rules:** `rules.local.yaml` next to `rules.yaml` is reloaded the same way.
-
-**Dashboard**:
-
-```bash
-cp examples/dashboard.yaml .
-export GREPALERT_DASHBOARD_PASSWORD=...
-grepalert-dashboard -config dashboard.yaml     # http://localhost:9400
-```
-
-Then, in the UI, create an enrollment token (**Agent enrollment**) for your agents, or connect to them by address (**Connect agent**), and create groups (**New group**).
-
-## Try it with Docker Compose
-
-```bash
-cd examples/compose
+git clone https://github.com/FadhlanHawali/grepalert.git
+cd grepalert/examples/compose
 docker compose up -d --build
 ```
 
-Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselves and join a group whose rules come from a stand-in git repository, with staged rollout on. Alerts arrive at http://localhost:9599. [The demo walkthrough](docs/demo.md) shows what to try. For single sign-on, there is also [a Keycloak example](docs/security.md#sign-in-roles-and-audit-log).
+Open http://localhost:9400 (`admin` / `demo`); alerts arrive at http://localhost:9599. The [demo walkthrough](docs/demo.md) shows what to try.
+
+## Install
+
+| Way | How |
+|---|---|
+| **Binaries** | Linux, macOS and Windows (amd64/arm64) on [Releases](https://github.com/FadhlanHawali/grepalert/releases), with a systemd unit in `examples/` |
+| **Containers** | `ghcr.io/fadhlanhawali/grepalert-agent` and `ghcr.io/fadhlanhawali/grepalert-dashboard`, configured with environment variables |
+| **Kubernetes** | Follow the pods a label selector picks, or log files on a shared volume: [Kubernetes](docs/kubernetes.md) |
+| **From source** | `make build` (Go 1.26+, and Node.js 20+ for the dashboard's UI) |
+
+All of it in detail: [Install](docs/install.md).
 
 ## Documentation
 
-| Topic | What's in it |
-|---|---|
-| [Demo walkthrough](docs/demo.md) | The Docker Compose demo, step by step |
-| [Agents](docs/agents.md) | Enrolling agents, labels, files an agent keeps on disk, groups, the dashboard being down, log rotation, restarts |
-| [Dashboard](docs/dashboard.md) | Agents and groups, rules from the UI or GitHub/GitLab, how changes reach agents |
-| [Kubernetes](docs/kubernetes.md) | Pod logs picked by a label selector, or log files on a shared volume, as on a VM |
-| [Rules](docs/rules.md) | Rule format, suppression, absence rules, webhook payloads and templates, extracting values from a line |
-| [Safe rule rollout](docs/rollout.md) | Versions and rollback, staged rollout, dry run, per-machine local rules |
-| [Fleet-level alerting](docs/fleet-alerting.md) | One alert across many hosts, silences, agent-down alerts |
-| [Security, sign-in and audit log](docs/security.md) | SSO (OIDC) and local accounts, roles, audit log, hardening |
-| [Memory and performance](docs/performance.md) | Why the agent's memory stays flat, multi-GB logs, many files, load testing |
-| [Agent API](docs/api.md) | The agent's HTTP API |
-| [Development](docs/development.md) | Code layout, building, working on the web UI |
-| [Releasing](docs/releasing.md) | How a release is cut: release notes, binaries, container images |
-| [Release notes](docs/releases/) | What each version brings, one file per release |
+Read in this order, or jump to what you need.
+
+**Setting up**
+1. [Install](docs/install.md): binaries, running the agent as a service, containers, building from source.
+2. **Configuration reference:** every setting, with a complete annotated example of each file:
+   - [agent.yaml](docs/config-agent.md)
+   - [rules.yaml](docs/config-rules.md)
+   - [dashboard.yaml](docs/config-dashboard.md)
+
+**Using it**
+
+3. [Writing rules](docs/rules.md): patterns and captured values, your own alert messages, suppression, absence rules, testing rules.
+4. [Running agents](docs/agents.md): standalone or connected, enrollment and labels, changing rules, files on disk, rotation and restarts, the dashboard being down.
+5. [Dashboard and groups](docs/dashboard.md): agents, groups, rules from the UI or GitHub/GitLab.
+6. [Safe rule rollout](docs/rollout.md): versions and rollback, staged rollout, dry run, local rules per machine.
+7. [Fleet alerting](docs/fleet-alerting.md): one alert across many hosts, silences, agent-down alerts.
+8. [Kubernetes](docs/kubernetes.md): pod logs by label selector, or log files on a volume.
+9. [Sign-in, roles and security](docs/security.md): SSO, roles, audit log, hardening.
+
+**Reference**
+
+10. [Agent API](docs/api.md)
+11. [Memory and performance](docs/performance.md)
+12. [Demo walkthrough](docs/demo.md)
+
+**Project**
+
+13. [Development](docs/development.md)
+14. [Releasing](docs/releasing.md)
+15. [Release notes](docs/releases/)
 
 ## License
 

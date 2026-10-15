@@ -1,0 +1,4 @@
+# The smallest useful agent: rules from rules.yaml in this folder, and the
+# agent's API on this machine only. Every other setting: examples/agent.yaml.
+rules_file: rules.yaml
+listen: "127.0.0.1:9300"

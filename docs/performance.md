@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Agent API](api.md) · Next: [Demo walkthrough →](demo.md)
 
 # Memory and performance
 

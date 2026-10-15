@@ -1,60 +1,96 @@
-# grepalert rules. Keep this file in git and let the dashboard sync it, or edit
-# it in place: the agent picks up changes without a restart.
+# grepalert rules: what to watch, and where to send alerts.
+# Reference: docs/config-rules.md · Guide: docs/rules.md
+#
+# The agent applies changes to this file without a restart. Check a file
+# first with: grepalert-agent -check rules.yaml
+#
+# ${VAR} is replaced with an environment variable OF THE AGENT, so URLs and
+# tokens stay out of this file (and out of git).
 
 webhooks:
-  # Generic JSON: the full alert object is POSTed.
-  - name: ops-webhook
-    url: ${OPS_WEBHOOK_URL}           # ${VAR} is resolved on the agent, keeping secrets out of git
-    headers:
+  # Every setting of a webhook. Without a template, the whole alert is
+  # POSTed as JSON (see docs/rules.md#webhook-payload).
+  - name: ops
+    url: ${OPS_WEBHOOK_URL}
+    method: POST                     # default POST
+    headers:                         # optional
       Authorization: Bearer ${OPS_WEBHOOK_TOKEN}
+    timeout: 10s                     # default 10s
 
-  # Slack / Mattermost / Google Chat style: render your own body.
+  # Slack, Mattermost, Google Chat: build the body with a Go template.
   - name: slack
     url: ${SLACK_WEBHOOK_URL}
     template: '{"text": {{ json .Text }}}'
 
-  # Discord
+  # Microsoft Teams (incoming webhook / workflow)
+  - name: teams
+    url: ${TEAMS_WEBHOOK_URL}
+    template: '{"text": {{ json .Text }}}'
+
+  # Discord: messages are limited to 2000 characters.
   - name: discord
     url: ${DISCORD_WEBHOOK_URL}
     template: '{"content": {{ json (trunc 1900 .Text) }}}'
 
 rules:
-  - name: nginx-5xx
+  # Every setting of a matching rule.
+  - name: nginx-5xx                          # required, unique
     description: Upstream errors served to clients
-    files: ["/var/log/nginx/access.log"]
-    pattern: '" (?P<status>5\d\d) '
-    exclude: 'GET /healthz'
-    severity: critical
-    labels: {team: web}
-    webhooks: [slack]
-    suppress:
-      window: 5m        # at most max_alerts per window...
-      max_alerts: 1
-      group_by: status  # ...per distinct status code
-      # summary: true   # when the window closes, send "N more matches suppressed"
+    files:                                   # files, or globs re-scanned for new files
+      - /var/log/nginx/access.log
+    pattern: '" (?P<status>5\d\d) '          # Go RE2 regexp; (?P<name>...) captures a value
+    exclude: 'GET /healthz'                  # optional: lines matching this never alert
+    severity: critical                       # optional free text: critical, warning, info...
+    labels: {team: web}                      # optional, passed to webhooks
+    webhooks: [slack]                        # one or more webhooks from above
+    suppress:                                # optional: limit how often it alerts
+      window: 5m                             # per window of this length...
+      max_alerts: 1                          # ...at most this many alerts (default 1)
+      group_by: status                       # ...for each distinct captured value
+      summary: true                          # then one "N more were held back" summary (default true)
+    # disabled: true                         # keep the rule, but don't run it
 
+  # Your own message, built from the values the pattern captured.
+  - name: datasource-suspended
+    files: [/var/log/myapp/app.log]
+    pattern: 'Datasource (?P<datasource>\S+) is suspended because (?P<reason>.+)'
+    severity: critical
+    webhooks: [ops]
+    suppress: {window: 10m, group_by: datasource}
+
+  # Globs: new files are picked up within rescan_interval.
   - name: app-exceptions
-    files: ["/var/log/myapp/*.log"]   # globs are re-scanned; new files are picked up automatically
+    files: ["/var/log/myapp/*.log"]
     pattern: '(?i)(exception|panic|fatal)'
     severity: warning
-    webhooks: [ops-webhook, slack]
-    suppress:
-      window: 10m
-      max_alerts: 3
+    webhooks: [ops, slack]
+    suppress: {window: 10m, max_alerts: 3}
 
+  # No suppress block: every matching line alerts.
   - name: disk-full
-    files: ["/var/log/syslog"]
+    files: [/var/log/syslog]
     pattern: 'No space left on device'
     severity: critical
-    webhooks: [ops-webhook]
-    # no suppress block: every match alerts
+    webhooks: [ops]
 
   # Absence rule: alerts when an expected line has NOT appeared for a while
-  # (a hung app or a stopped cron job writes nothing, so error rules miss it).
-  # It alerts once, then once more when the line is seen again ("recovered").
+  # (a hung app or a stopped job writes nothing, so error rules can't catch
+  # it). It alerts once, then once more when the line is back ("recovered").
   - name: no-heartbeat
-    files: ["/var/log/myapp/app.log"]
-    absent: 'heartbeat OK'
+    files: [/var/log/myapp/app.log]
+    absent: 'heartbeat OK'                   # instead of pattern
     for: 10m
     severity: critical
-    webhooks: [ops-webhook]
+    webhooks: [ops]
+
+  # Kubernetes: the logs of the pods a label selector picks, instead of files
+  # (see docs/kubernetes.md).
+  - name: checkout-errors
+    kubernetes:
+      namespace: shop                        # or "*" for every namespace
+      selector: app=checkout                 # a label selector; empty = every pod
+      container: app                         # optional; default every container
+    pattern: 'ERROR (?P<code>\w+)'
+    severity: critical
+    webhooks: [slack]
+    suppress: {window: 5m, group_by: code}

@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Fleet alerting](fleet-alerting.md) · Next: [Sign-in, roles and security →](security.md)
 
 # Kubernetes
 
@@ -104,7 +104,7 @@ kubernetes:
 - **API server load:** each followed container is one open log request to the API server, like a `kubectl logs -f`. `max_streams` (200) caps them; beyond it, the agent follows the first 200 and reports the rest. Prefer selectors that pick what you need over `namespace: "*"` with an empty selector.
 - **Dry runs** replay files only. For rules with a Kubernetes source, the dry run says the pod logs were not replayed. The **rule playground** works for any rule: paste lines from `kubectl logs`.
 - **With a dashboard:**
-  - Set `GREPALERT_DASHBOARD_URL` and `GREPALERT_ENROLL_TOKEN` (see [Install](../README.md#install)), and mount a writable volume at `/var/lib/grepalert` instead of the read-only rules ConfigMap. The dashboard then pushes the group's rules there.
+  - Set `GREPALERT_DASHBOARD_URL` and `GREPALERT_ENROLL_TOKEN` (see [Install](install.md)), and mount a writable volume at `/var/lib/grepalert` instead of the read-only rules ConfigMap. The dashboard then pushes the group's rules there.
   - A group can mix agents that read files and agents that read pods: each agent only follows the sources it can.
 
 ## Log files on a volume

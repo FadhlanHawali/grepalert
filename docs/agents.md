@@ -1,77 +1,125 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Writing rules](rules.md) · Next: [Dashboard and groups →](dashboard.md)
 
-# Agents
+# Running agents
 
-How agents connect to the dashboard, what they keep on disk, and how they follow log files through rotation and restarts.
+An agent runs on every server with logs. It reads its settings from [agent.yaml](config-agent.md) and its rules from [rules.yaml](config-rules.md).
 
-## Agents that connect to the dashboard (recommended)
+## Three ways to run an agent
 
-In most company networks the dashboard cannot reach the servers: NAT, firewalls, separate VPCs. So the agent connects **out** to the dashboard instead, and needs no inbound port:
+| | On its own | Connected to a dashboard | Reached by a dashboard |
+|---|---|---|---|
+| **Set up** | no `dashboard` section | a `dashboard` section | `listen` + `token`; added with **Connect agent** |
+| **Rules come from** | its `rules_file` | its group in the dashboard | its group, or its own file |
+| **Network** | none | the agent connects **out**; no open port | the dashboard connects **in** to port 9300 |
+| **Alerts** | sent by the agent | through the dashboard (one alert across hosts), or directly while it is down | sent by the agent |
+| **Use it for** | one server, or rules managed with your own tools | most fleets, also behind NAT and firewalls | servers the dashboard can reach directly |
+
+### On its own
+
+Nothing else is needed: the [quick start](../README.md#quick-start-your-first-alert) shows the two files. Rules are changed by editing `rules_file`; see [changing rules](#changing-rules) below.
+
+### Connected to a dashboard
+
+The usual way for a fleet. In most company networks the dashboard can't reach the servers (NAT, firewalls, separate VPCs), so the agent connects **out** instead, and needs no open port:
 
 ```yaml
 # /etc/grepalert/agent.yaml
-dashboard:
-  url: https://grepalert.example.com
-  enrollment_token: ${GREPALERT_ENROLL_TOKEN}   # used once, at first start
+rules_file: /etc/grepalert/rules.yaml
 labels:
   role: web
   env: prod
-rules_file: /var/lib/grepalert/rules.yaml
+dashboard:
+  url: https://grepalert.example.com
+  enrollment_token: ${GREPALERT_ENROLL_TOKEN}
 ```
 
-1. **Enroll.** On first start the agent presents the enrollment token. The dashboard gives it its own credential, which the agent saves to `identity_file` (default: next to `rules_file`, mode `0600`). After that the token is no longer needed. A restarted agent reuses its identity, so it never shows up twice.
-2. **Connect.** The agent keeps one HTTPS long-poll open to `/agent/v1/poll`. The dashboard sends its usual API calls (status, rules, events) down that connection, and the agent runs them against its own API in-process. Nothing listens on the server unless you set `listen`. HTTP proxies are honoured via `HTTPS_PROXY`, and custom CAs via `dashboard.ca_file`.
-3. **Join groups by label.** A group with *Auto-add agents with labels* `role=web,env=prod` picks up every agent that has those labels. It pushes them its rules right away, including agents that enroll later. If several groups match, the first by name wins. An admin can override this per agent (Settings → Group). Every agent also gets an `os` label automatically.
+1. **Enroll.** On its first start the agent presents the enrollment token.
+   - The dashboard gives it a credential of its own, which the agent keeps in `identity_file` (next to the rules file, mode 0600).
+   - After that, the token is no longer needed. A restarted agent reuses its credential, so it never shows up twice.
+2. **Connect.** The agent keeps one HTTPS long-poll open to the dashboard. The dashboard sends its requests (status, rules, events) down that connection.
+   - Nothing listens on the server, unless you set `listen`.
+   - Proxies are used from `HTTPS_PROXY`, and private CAs from `dashboard.ca_file`.
+3. **Join a group by label.** A group set to *Auto-add agents with labels* `role=web,env=prod` picks up every agent with those labels and pushes them its rules, including agents that enroll later.
+   - If several groups match, the first by name wins.
+   - An admin can choose an agent's group by hand instead (agent → Settings → Group).
+   - Every agent also gets an `os` label.
 
-**Tokens.** Create enrollment tokens under **Agent enrollment** in the UI, with an optional expiry. They are stored only as hashes and shown once. For automation (Ansible, Terraform, VM images), you can instead set a fixed `enrollment_token` in the dashboard config.
+**Enrollment tokens:**
+- **In the UI:** create them under **Agent enrollment**, with an optional expiry. They are stored only as hashes and shown once.
+- **For automation** (Ansible, Terraform, VM images): set a fixed `enrollment_token` in [dashboard.yaml](config-dashboard.md) instead.
 
-**Revoking access.** Revoking a token stops *new* enrollments. To cut off an agent that already enrolled, use **Revoke access** in its Settings. The dashboard then refuses its connection and stops managing it. **Allow again** restores it within about 15 seconds.
-
-**Resilience.** Agents keep alerting with their last rules while the dashboard is down, and reconnect by themselves (with backoff, up to 30 s). If the dashboard's data is lost, agents notice they are unknown and enroll again with their token.
+**Revoking:**
+- **A token:** revoking it stops *new* enrollments with it.
+- **An agent that already enrolled:** use **Revoke access** in its Settings; the dashboard then refuses it. **Allow again** restores it within about 15 seconds.
 
 Measured with 10 VMs that the dashboard could not reach directly:
-- All 10 enrolled within a second of starting.
-- A new `role=api` group reached all 10 in **111 ms**, and a rules edit reached them in **72 ms**.
-- After a dashboard restart, all 10 were back online in 7.6 s.
+- **Enrolling:** all 10 enrolled within a second of starting.
+- **Pushing rules:** a new group reached all 10 in 111 ms, and a rules edit in 72 ms.
+- **Reconnecting:** after a dashboard restart, all 10 were back online in 7.6 s.
 
+### Reached by a dashboard
+
+When the dashboard **can** reach the server, it can connect to the agent's API instead:
+1. Give the agent `listen: ":9300"` and a `token`.
+2. In the dashboard, use **Connect agent** with its address (`http://10.0.0.5:9300`) and the token.
+
+Use TLS (`tls_cert`, `tls_key`) or a private network: whoever can reach the API with the token can change the agent's rules.
+
+## Changing rules
+
+Every way of changing rules validates them first. An invalid version is rejected, the agent reports why, and the previous rules keep running.
+
+| Way | How |
+|---|---|
+| Edit the file | Save `rules_file`; the agent applies it within `rescan_interval` (10 s). Check first with `grepalert-agent -check`. |
+| A dashboard group | Edit the group's rules in the UI, or change them in git and sync. They reach every member, all at once or [in stages](rollout.md). |
+| An ungrouped agent | In the dashboard: agent → Rules → Validate, then Save & apply. |
+| The API | `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @rules.yaml http://agent:9300/api/v1/rules` ([Agent API](api.md)) |
+| Local rules | `rules.local.yaml`, or agent → Rules → Local rules in the dashboard: extra rules for this machine, on top of the others. |
+
+**What carries over:**
+- **Saved:** rules pushed by a dashboard or the API are written to `rules_file`, so they survive a restart.
+- **Files:** files the new rules no longer use are released, and new files are opened.
+- **Suppression:** suppression windows of rules that stay carry on.
 
 ## What an agent keeps on disk
 
 | File (next to `rules_file`) | What it is |
 |---|---|
-| `rules.yaml` (`rules_file`) | The rules the agent runs: its own, or its group's once it joins one (a group push overwrites it) |
-| `rules.local.yaml` | Extra rules for this machine only, run on top. Groups never touch it |
+| `rules.yaml` (`rules_file`) | The rules the agent runs: its own, or its group's once it joins one |
+| `rules.local.yaml` | Extra rules for this machine only. Groups never touch it |
 | `rules.before-group.yaml` | The agent's own rules, saved when a group first replaced them |
 | `grepalert.state.json` | Read positions, so restarts neither miss nor repeat lines |
-| `grepalert.identity.json` | The credential an enrolled agent got from the dashboard |
-| `grepalert.silences.json` | The last silences from the dashboard |
+| `grepalert.identity.json` | The credential of an enrolled agent |
+| `grepalert.silences.json` | The last silences received from the dashboard |
 
-**Joining and leaving a group.**
+**Joining and leaving a group:**
 - **Joining:** the group's rules replace the agent's own in `rules.yaml`. Before the first replacement, the agent saves its own rules to `rules.before-group.yaml`.
-- **Leaving:** the agent keeps running the group's rules until you restore. When you move it out of its group, the dashboard offers to restore its own rules; you can also do it later from the agent's **Rules** tab.
-- **Editing instead of restoring:** if you edit the agent's rules directly instead, those become its own rules, and the saved copy is dropped.
+- **Leaving:** the agent keeps running the group's rules. When you move it out of its group, the dashboard offers to restore its own rules; you can also do it later from the agent's **Rules** tab.
+- **Editing instead of restoring:** if you edit the agent's rules directly, those become its own rules, and the saved copy is dropped.
+
+## If the dashboard is down
 
 ![The dashboard goes down, then the agent restarts during the outage](assets/dashboard-down.gif)
 
-**If the dashboard is down.**
-- **Rules:** agents keep running the rules on their disk, including after a restart.
-- **Alerts:** they go straight to the webhooks after `fallback_after` (15s).
+- **Rules:** agents keep running the rules on their disk, including across a restart.
+- **Alerts:** after `fallback_after` (15 s) without the dashboard, agents send them straight to the webhooks.
 - **Silences:** they still hold, even across an agent restart.
-- **Recovery:** when the dashboard is back, agents reconnect by themselves and are brought up to date.
-
+- **Recovery:** when the dashboard is back, agents reconnect by themselves (backoff up to 30 s) and are brought up to date.
+- **Lost dashboard data:** if the dashboard's data is lost, agents notice they are unknown and enroll again with their token.
 
 ## Log rotation
 
-The agent polls each file (500 ms by default, set with `poll_interval`). That works the same way on Linux, macOS and Windows.
+The agent polls each file (every 500 ms by default, `poll_interval`), which works the same on Linux, macOS and Windows:
 
-- **rename + create** (logrotate default): the agent finishes reading the old file, then reads the new one from the start.
-- **copytruncate**: the agent sees the file shrink and starts again from offset 0.
-- **Files that don't exist yet**: the agent waits for them, then reads them from the start.
-- **First start**: files are read from the end (`start_from: end`), so old history doesn't set off a burst of alerts.
+- **rename + create** (logrotate's default): the agent finishes reading the old file, then reads the new one from its start.
+- **copytruncate:** the agent sees the file shrink and starts again from offset 0.
+- **Files that don't exist yet:** the agent waits for them, then reads them from the start.
+- **First start:** files are read from the end (`start_from: end`), so old history doesn't set off a burst of alerts.
 
-### Restarts don't miss lines
+## Restarts don't miss lines
 
-Every 5 seconds (`state_interval`), and again on shutdown, the agent saves its read position for each file to `state_file`. By default that is `grepalert.state.json` next to the rules file. Each position records:
+Every 5 seconds (`state_interval`), and again on shutdown, the agent saves its read position for each file to `state_file`. Each position records:
 
 - the offset just past the last complete line, so a half-written line is read in full after a restart
 - the file's identity (inode, or the Windows file index)
@@ -79,8 +127,11 @@ Every 5 seconds (`state_interval`), and again on shutdown, the agent saves its r
 
 On restart the agent checks whether the file is still the one it was reading:
 
-- **Same file**: it resumes at the saved offset. Lines written while it was down are alerted on.
-- **Rotated while down**: it looks for the old file under a rotated name next to it (`app.log.1`, `app.log-20261012`, … but not compressed `.gz` files). It reads the rest of that old file, then reads the new file from the start. This works for both rename and copytruncate rotation.
-- **Replaced and the old file is gone**: it reads the new file from the start.
+- **Same file:** it resumes at the saved offset, and lines written while it was down are alerted on.
+- **Rotated while down:** it finds the old file under its rotated name (`app.log.1`, `app.log-20261012`, …, but not compressed `.gz` files), reads the rest of it, then reads the new file from the start.
+- **Replaced, with the old file gone:** it reads the new file from the start.
 
-Delivery is at-least-once. After a crash, lines read since the last save (at most `state_interval` worth) are processed again and can alert twice. A clean shutdown saves exact positions and spends up to 5 seconds delivering alerts that are still queued. Suppression windows are kept in memory, so they start fresh after a restart.
+**Delivery is at-least-once:**
+- **After a crash,** lines read since the last save (at most `state_interval` of them) are processed again and can alert twice.
+- **A clean shutdown** saves exact positions, and spends up to 5 seconds delivering alerts that are still queued.
+- **Suppression windows** are kept in memory, so they start fresh after a restart.

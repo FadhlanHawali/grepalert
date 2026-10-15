@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Demo walkthrough](demo.md) · Next: [Releasing →](releasing.md)
 
 # Development
 

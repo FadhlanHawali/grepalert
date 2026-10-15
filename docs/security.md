@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Kubernetes](kubernetes.md) · Next: [Agent API →](api.md)
 
 # Security, sign-in and audit log
 

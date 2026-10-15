@@ -1,0 +1,8 @@
+# The smallest useful dashboard: an admin account and a fixed enrollment
+# token for agents. Every other setting: examples/dashboard.yaml.
+listen: ":9400"
+data_file: dashboard-data.json
+auth:
+  username: admin
+  password: ${GREPALERT_DASHBOARD_PASSWORD}
+enrollment_token: ${GREPALERT_ENROLL_TOKEN}

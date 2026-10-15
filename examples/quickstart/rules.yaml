@@ -1,0 +1,12 @@
+webhooks:
+  - name: chat
+    url: ${WEBHOOK_URL}                      # your Slack/Teams/Mattermost incoming webhook
+    template: '{"text": {{ json .Text }}}'
+
+rules:
+  - name: errors
+    files: [app.log]                         # the log to watch (here: app.log in this folder)
+    pattern: 'ERROR (?P<what>.+)'            # lines with ERROR; the rest of the line is captured
+    severity: critical
+    webhooks: [chat]
+    suppress: {window: 1m, group_by: what}   # the same error at most once a minute

@@ -1,4 +1,4 @@
-[← Documentation index](../README.md#documentation)
+[← Documentation](../README.md#documentation) · Previous: [Sign-in, roles and security](security.md) · Next: [Memory and performance →](performance.md)
 
 # Agent API
 
