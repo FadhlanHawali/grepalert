@@ -40,6 +40,7 @@ for target in $TARGETS; do
   [ -f LICENSE ] && cp LICENSE "$dir/"
   [ -f "docs/releases/v$VERSION.md" ] && cp "docs/releases/v$VERSION.md" "$dir/RELEASE_NOTES.md"
   cp examples/agent.yaml examples/rules.yaml examples/dashboard.yaml examples/grepalert-agent.service "$dir/examples/"
+  mkdir -p "$dir/examples/quickstart" && cp examples/quickstart/*.yaml "$dir/examples/quickstart/"
   chmod +x "$dir"/grepalert-*
   if [ "$os" = windows ]; then archive_zip "$name"; else tar -C dist -czf "dist/$name.tar.gz" "$name"; fi
   rm -rf "$dir"
