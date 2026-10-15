@@ -47,7 +47,9 @@ type Rule struct {
 	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
 	Disabled    bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	Files       []string `yaml:"files" json:"files"`
-	Pattern     string   `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+	// Kubernetes reads the logs of matching pods instead of files.
+	Kubernetes *KubernetesSource `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Pattern    string            `yaml:"pattern,omitempty" json:"pattern,omitempty"`
 	// Absent makes this an absence rule: it alerts when no line matching
 	// Absent has been seen for For, and again when one shows up (recovered).
 	// Use it for heartbeats and jobs that should log regularly.
@@ -58,6 +60,54 @@ type Rule struct {
 	Labels   map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Webhooks []string          `yaml:"webhooks" json:"webhooks"`
 	Suppress *Suppress         `yaml:"suppress,omitempty" json:"suppress,omitempty"`
+}
+
+// KubernetesSource selects pods whose container logs a rule reads, the way
+// `kubectl logs -f -l <selector>` would.
+type KubernetesSource struct {
+	// Namespace of the pods; "*" means every namespace.
+	Namespace string `yaml:"namespace" json:"namespace"`
+	// Selector is a label selector, e.g. "app=checkout,tier!=canary". Empty
+	// selects every pod in the namespace.
+	Selector string `yaml:"selector,omitempty" json:"selector,omitempty"`
+	// Container limits it to one container of each pod; empty reads all.
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
+}
+
+// Key identifies a source: rules with the same key read the same streams.
+func (k KubernetesSource) Key() string { return k.Namespace + "|" + k.Selector + "|" + k.Container }
+
+func (k KubernetesSource) String() string {
+	s := "namespace " + k.Namespace
+	if k.Selector != "" {
+		s += ", pods " + k.Selector
+	}
+	if k.Container != "" {
+		s += ", container " + k.Container
+	}
+	return s
+}
+
+var (
+	dnsLabel        = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+	selectorPattern = regexp.MustCompile(`^[A-Za-z0-9_./\-=!, ()]*$`)
+)
+
+func (k *KubernetesSource) validate() error {
+	k.Namespace = strings.TrimSpace(k.Namespace)
+	k.Selector = strings.TrimSpace(k.Selector)
+	k.Container = strings.TrimSpace(k.Container)
+	switch {
+	case k.Namespace == "":
+		return errors.New(`kubernetes.namespace is required ("*" for every namespace)`)
+	case k.Namespace != "*" && !dnsLabel.MatchString(k.Namespace):
+		return fmt.Errorf("kubernetes.namespace %q is not a valid namespace name", k.Namespace)
+	case !selectorPattern.MatchString(k.Selector):
+		return fmt.Errorf("kubernetes.selector %q is not a label selector (e.g. app=checkout,tier!=canary)", k.Selector)
+	case k.Container != "" && !dnsLabel.MatchString(k.Container):
+		return fmt.Errorf("kubernetes.container %q is not a valid container name", k.Container)
+	}
+	return nil
 }
 
 // Suppress limits how many alerts a rule may send per time window.
@@ -280,8 +330,15 @@ func compile(raw []byte, f *File, opts Options) (*Compiled, error) {
 			errs = append(errs, fmt.Errorf("%s: duplicate name", where))
 		}
 		seen[r.Name] = true
-		if len(r.Files) == 0 {
-			errs = append(errs, fmt.Errorf("%s: at least one file is required", where))
+		switch {
+		case r.Kubernetes != nil && len(r.Files) > 0:
+			errs = append(errs, fmt.Errorf("%s: use either files or kubernetes, not both (make two rules)", where))
+		case r.Kubernetes != nil:
+			if err := r.Kubernetes.validate(); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", where, err))
+			}
+		case len(r.Files) == 0:
+			errs = append(errs, fmt.Errorf("%s: files (or a kubernetes source) is required", where))
 		}
 		switch {
 		case r.Pattern == "" && r.Absent == "":

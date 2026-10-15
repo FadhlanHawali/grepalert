@@ -2,7 +2,7 @@
 
 **Alerts from your logs in five minutes. No Loki, no Elasticsearch, no database.**
 
-Tail a file, match a pattern, post a clean message to Slack, Teams or any webhook. Run it on one server, or manage a whole fleet from the dashboard.
+Tail a file or the pods a Kubernetes label selector picks, match a pattern, post a clean message to Slack, Teams or any webhook. Run it on one server, or manage a whole fleet from the dashboard.
 
 **On its own.** One agent and a rules file on the server is all it takes:
 
@@ -126,6 +126,7 @@ Open http://localhost:9400 (`admin` / `demo`). Three app servers enroll themselv
 | [Demo walkthrough](docs/demo.md) | The Docker Compose demo, step by step |
 | [Agents](docs/agents.md) | Enrolling agents, labels, files an agent keeps on disk, groups, the dashboard being down, log rotation, restarts |
 | [Dashboard](docs/dashboard.md) | Agents and groups, rules from the UI or GitHub/GitLab, how changes reach agents |
+| [Kubernetes](docs/kubernetes.md) | Following the logs of pods picked by a label selector: rules, deployment, permissions |
 | [Rules](docs/rules.md) | Rule format, suppression, absence rules, webhook payloads and templates, extracting values from a line |
 | [Safe rule rollout](docs/rollout.md) | Versions and rollback, staged rollout, dry run, per-machine local rules |
 | [Fleet-level alerting](docs/fleet-alerting.md) | One alert across many hosts, silences, agent-down alerts |

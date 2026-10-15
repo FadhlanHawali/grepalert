@@ -24,6 +24,9 @@ rules:
 
 See [examples/rules.yaml](../examples/rules.yaml) for more examples.
 
+
+**Kubernetes pods instead of files.** Give a rule a `kubernetes:` source to read the logs of the pods a label selector picks, for example `{namespace: shop, selector: app=checkout}`. See [Kubernetes](kubernetes.md).
+
 ## Suppression
 
 Without a `suppress` block, every matching line sends an alert. With one:

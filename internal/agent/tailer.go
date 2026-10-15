@@ -31,6 +31,9 @@ type Position struct {
 	// "a new file now lives at this path" even when IDs are reused or missing.
 	FP    string `json:"fp"`
 	FPLen int    `json:"fp_len"`
+	// TS is where a Kubernetes container log resumes: the time of the last
+	// line handled (files use Offset instead).
+	TS time.Time `json:"ts,omitempty"`
 }
 
 // fpSize is how much of a file's head is fingerprinted.

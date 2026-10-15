@@ -50,9 +50,11 @@ type Agent struct {
 	tailers   map[string]*tailerHandle
 	resume    map[string]Position // saved positions not yet handed to a tailer
 	stopped   bool
-	sched     *scheduler // polls all tailers on a fixed worker pool
+	sched     *scheduler   // polls all tailers on a fixed worker pool
+	kube      *kubeWatcher // follows the pods of rules with a kubernetes source
 
-	lastState []byte // last state written, to skip identical writes
+	lastState    []byte // last state written, to skip identical writes
+	rejectedHash string // rules file version that failed validation (Run goroutine only)
 
 	histMu  sync.Mutex
 	hist    map[string]*offsetHist // per file: where it was each minute, for dry runs
@@ -84,6 +86,7 @@ func New(cfg Config, log *slog.Logger) *Agent {
 	a.notif = newNotifier(cfg.QueueSize, cfg.Retries, a.events)
 	a.eng = newEngine(cfg.Name, host, a.events, a.notif.enqueue)
 	a.sched = newScheduler(cfg.ReadWorkers, cfg.PollInterval.D(), cfg.IdlePollInterval.D())
+	a.kube = newKubeWatcher(a)
 	if cfg.Dashboard.URL != "" {
 		a.conn, a.connErr = newConnector(a)
 		if a.conn != nil {
@@ -130,6 +133,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.conn != nil {
 		go a.conn.run(ctx)
 	}
+	go a.kube.run(ctx)
 
 	tick := time.NewTicker(a.cfg.RescanInterval.D())
 	defer tick.Stop()
@@ -154,6 +158,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			a.mu.Unlock()
 			a.sched.stop() // final read of every file, then close
+			a.kube.stop()  // pod log streams end with the context
 			if a.conn != nil {
 				a.conn.flushAlerts() // hand the last alerts to the dashboard (or send them)
 			}
@@ -191,15 +196,22 @@ func (a *Agent) loadRulesFile(initial bool) error {
 	if err != nil {
 		return err
 	}
+	hash := rules.Hash(raw)
 	a.mu.Lock()
-	same := a.rules != nil && a.rules.Hash == rules.Hash(raw)
+	same := a.rules != nil && a.rules.Hash == hash
 	a.mu.Unlock()
-	if same {
+	// A file that was rejected is reported once, not on every check.
+	if same || (!initial && hash == a.rejectedHash) {
 		return nil
 	}
 	_, err = a.apply(raw, "file", false)
-	if err != nil && !initial {
-		a.events.add(Event{Time: time.Now(), Type: "rules", Message: "rules file rejected: " + err.Error()})
+	if err != nil {
+		a.rejectedHash = hash
+		if !initial {
+			a.events.add(Event{Time: time.Now(), Type: "rules", Message: "rules file rejected: " + err.Error()})
+		}
+	} else {
+		a.rejectedHash = ""
 	}
 	return err
 }
@@ -291,6 +303,7 @@ func (a *Agent) apply(raw []byte, origin string, persist bool) (*rules.Compiled,
 	a.rulesOrigin = origin
 	a.rebuild()
 	a.reconcile(false)
+	a.kube.trigger() // pods of new or changed kubernetes sources
 	a.log.Info("rules applied", "hash", c.Hash, "rules", len(c.Rules), "origin", origin)
 	a.events.add(Event{Time: time.Now(), Type: "rules",
 		Message: fmt.Sprintf("rules %s applied from %s (%d active rules)", c.Hash, origin, len(c.Rules))})
@@ -340,6 +353,7 @@ func (a *Agent) setLocal(raw []byte, origin string) {
 	a.localRaw, a.localHash = raw, rules.Hash(raw)
 	a.rebuild()
 	a.reconcile(false)
+	a.kube.trigger()
 	if a.localErr == "" && len(bytes.TrimSpace(raw)) > 0 {
 		n := len(a.active.Rules) - len(a.rules.Rules)
 		a.log.Info("local rules applied", "hash", a.localHash, "rules", n, "origin", origin)
@@ -401,6 +415,17 @@ func (a *Agent) reconcile(discovered bool) {
 			}
 		}
 	}
+	defer func() {
+		// Pod log streams are matched like files, but the watcher runs them.
+		snap := make(map[string][]*rules.CompiledRule, len(byFile))
+		for p, rs := range byFile {
+			snap[p] = rs
+		}
+		for p, rs := range a.kube.paths() {
+			snap[p] = rs
+		}
+		a.eng.setSnapshot(&snapshot{rules: a.active, byFile: snap})
+	}()
 	for p, h := range a.tailers {
 		if _, ok := byFile[p]; !ok {
 			a.sched.remove(h.t)
@@ -424,7 +449,21 @@ func (a *Agent) reconcile(discovered bool) {
 		a.tailers[p] = &tailerHandle{t: t}
 		a.sched.add(t)
 	}
-	a.eng.setSnapshot(&snapshot{rules: a.active, byFile: byFile})
+}
+
+// takeKubeResume hands the saved positions of pod log streams to the
+// Kubernetes watcher (once, at start).
+func (a *Agent) takeKubeResume() map[string]Position {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := map[string]Position{}
+	for p, pos := range a.resume {
+		if strings.HasPrefix(p, "k8s:") {
+			out[p] = pos
+			delete(a.resume, p)
+		}
+	}
+	return out
 }
 
 // expandPath returns glob matches, or the literal path when it has no glob
@@ -501,9 +540,11 @@ type Status struct {
 		Fallback     uint64 `json:"fallback"`
 		Silenced     uint64 `json:"silenced"`
 	} `json:"webhooks"`
-	SuppressKeys int              `json:"suppress_keys"`
-	Dashboard    *DashboardStatus `json:"dashboard,omitempty"`
-	Memory       MemoryStats      `json:"memory"`
+	SuppressKeys int `json:"suppress_keys"`
+	// Kubernetes is set when rules read pod logs.
+	Kubernetes *KubeStatus      `json:"kubernetes,omitempty"`
+	Dashboard  *DashboardStatus `json:"dashboard,omitempty"`
+	Memory     MemoryStats      `json:"memory"`
 }
 
 type RuleStatus struct {
@@ -583,7 +624,11 @@ func (a *Agent) Status() Status {
 		}
 		s.Files = append(s.Files, fs)
 	}
+	active := a.active
 	a.mu.Unlock()
+	var kfiles []FileStatus
+	s.Kubernetes, kfiles = a.kube.status(active)
+	s.Files = append(s.Files, kfiles...)
 	sort.Slice(s.Files, func(i, j int) bool { return s.Files[i].Path < s.Files[j].Path })
 
 	s.Webhooks.Sent = a.notif.sender.Sent.Load()

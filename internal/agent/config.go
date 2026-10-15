@@ -61,6 +61,10 @@ type Config struct {
 	Retries     int `yaml:"retries"`
 	EventBuffer int `yaml:"event_buffer"`
 
+	// Kubernetes is used by rules with a `kubernetes:` source: how to reach
+	// the cluster (in-cluster service account by default).
+	Kubernetes KubernetesConfig `yaml:"kubernetes"`
+
 	// MemoryLimit is a soft Go runtime limit (e.g. "64MiB"). The GC works
 	// harder as the heap nears it, keeping RSS flat.
 	MemoryLimit ByteSize `yaml:"memory_limit"`
@@ -122,6 +126,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.EventBuffer <= 0 {
 		c.EventBuffer = 500
+	}
+	if c.Kubernetes.MaxStreams <= 0 {
+		c.Kubernetes.MaxStreams = 200
 	}
 	if c.MemoryLimit == 0 {
 		c.MemoryLimit = 64 << 20

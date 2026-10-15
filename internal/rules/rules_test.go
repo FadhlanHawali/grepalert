@@ -83,7 +83,7 @@ rules:
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"url must be", "pattern:", "unknown webhook", "duplicate name", "at least one file", "group_by"} {
+	for _, want := range []string{"url must be", "pattern:", "unknown webhook", "duplicate name", "files (or a kubernetes source) is required", "group_by"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q:\n%v", want, err)
 		}
@@ -115,6 +115,40 @@ func TestAbsenceRuleValidation(t *testing.T) {
 		}
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%q: error %v, want %q", c.extra, err, c.wantErr)
+		}
+	}
+}
+
+func TestKubernetesSource(t *testing.T) {
+	ok := `webhooks: [{name: h, url: "http://x.test/h"}]
+rules:
+  - name: checkout
+    kubernetes: {namespace: shop, selector: "app=checkout,tier notin (canary)", container: api}
+    pattern: ERROR
+    webhooks: [h]
+`
+	c, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := c.Rules[0].Kubernetes; k == nil || k.Key() != "shop|app=checkout,tier notin (canary)|api" {
+		t.Fatalf("source = %+v", k)
+	}
+	for _, bad := range []struct{ yaml, want string }{
+		{`kubernetes: {selector: app=x}`, "namespace is required"},
+		{`kubernetes: {namespace: Shop_1}`, "not a valid namespace"},
+		{`kubernetes: {namespace: shop, selector: "app=x; rm"}`, "not a label selector"},
+		{`kubernetes: {namespace: shop}, files: [/x]`, "not both"},
+	} {
+		doc := "webhooks: [{name: h, url: \"http://x.test/h\"}]\nrules:\n  - {name: r, " + strings.Trim(bad.yaml, "{}") + ", pattern: E, webhooks: [h]}\n"
+		if strings.HasPrefix(bad.yaml, "kubernetes: {") {
+			doc = "webhooks: [{name: h, url: \"http://x.test/h\"}]\nrules:\n  - name: r\n    " + bad.yaml + "\n    pattern: E\n    webhooks: [h]\n"
+			if strings.Contains(bad.yaml, "}, files") {
+				doc = "webhooks: [{name: h, url: \"http://x.test/h\"}]\nrules:\n  - name: r\n    kubernetes: {namespace: shop}\n    files: [/x]\n    pattern: E\n    webhooks: [h]\n"
+			}
+		}
+		if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("%s: err = %v, want %q", bad.yaml, err, bad.want)
 		}
 	}
 }

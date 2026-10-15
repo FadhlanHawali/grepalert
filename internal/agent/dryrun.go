@@ -247,6 +247,18 @@ func (a *Agent) DryRun(ctx context.Context, candidate *rules.Compiled, window ti
 			res.Files[i].From = from
 		}
 	}
+	// Pod logs live in the cluster, not on this disk: say so instead of
+	// silently counting nothing for those rules.
+	seen := map[string]bool{}
+	for _, c := range []*rules.Compiled{current, candidate} {
+		for _, r := range c.Rules {
+			if k := r.Kubernetes; k != nil && !seen[k.Key()] {
+				seen[k.Key()] = true
+				res.Files = append(res.Files, DryRunFile{Path: "k8s: " + k.String(), From: from,
+					Error: "dry runs replay files only; this rule's Kubernetes pod logs were not replayed"})
+			}
+		}
+	}
 	res.TookMS = time.Since(start).Milliseconds()
 	return res, nil
 }

@@ -1,0 +1,37 @@
+# A demo app for the grepalert Kubernetes example: two replicas of
+# "checkout" in namespace shop that log requests and, now and then, errors.
+#
+#   kubectl apply -f demo-app.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: checkout}
+  template:
+    metadata:
+      labels: {app: checkout, tier: backend}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              i=0
+              while true; do
+                i=$((i+1))
+                echo "INFO GET /api/cart 200 req=$i"
+                [ $((i % 7)) -eq 0 ] && echo "ERROR PAYMENT_DECLINED gateway returned 402 req=$i"
+                [ $((i % 11)) -eq 0 ] && echo "ERROR DB_TIMEOUT query exceeded 5s req=$i"
+                sleep 1
+              done

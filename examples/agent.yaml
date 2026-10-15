@@ -25,6 +25,13 @@ rules_file: rules.yaml
 # Default: rules.local.yaml next to rules_file. "off" disables.
 # local_rules_file: /var/lib/grepalert/rules.local.yaml
 
+# Rules with a `kubernetes:` source follow pod logs. In a cluster the pod's
+# service account is used; from outside, point at a kubeconfig.
+# kubernetes:
+#   kubeconfig: /etc/grepalert/kubeconfig
+#   context: prod
+#   max_streams: 200
+
 # Read positions are saved here so a restart (or crash) resumes where the agent
 # stopped. Default: grepalert.state.json next to rules_file. "off" disables.
 # state_file: /var/lib/grepalert/state.json

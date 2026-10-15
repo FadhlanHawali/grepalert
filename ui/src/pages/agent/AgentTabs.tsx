@@ -45,14 +45,31 @@ export function AgentOverview({ a }: { a: Agent }) {
           {!s.rules?.length && <tr><td colSpan={7} className="muted">No active rules</td></tr>}
         </tbody>
       </table></div>
-      <h3 className="sec">Tailed files</h3>
+      {s.kubernetes && <>
+        <h3 className="sec">Kubernetes sources</h3>
+        {s.kubernetes.error && <Msg kind="bad">{s.kubernetes.error}</Msg>}
+        <div className="scroll"><table>
+          <thead><tr><th>Namespace</th><th>Pods selected by</th><th>Container</th><th className="num">Pods</th><th>State</th></tr></thead>
+          <tbody>{s.kubernetes.sources.map(k => (
+            <tr key={k.namespace + k.selector + k.container}>
+              <td>{k.namespace === '*' ? 'all namespaces' : k.namespace}</td>
+              <td><code>{k.selector || 'every pod'}</code></td>
+              <td>{k.container || 'all'}</td>
+              <td className="num">{k.pods}</td>
+              <td className="wrap">{k.error ? <Badge kind="bad" title={k.error}>error</Badge> : <Badge kind="ok">following</Badge>}{k.error && <span className="muted"> {k.error}</span>}</td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      </>}
+      <h3 className="sec">{s.kubernetes ? 'Tailed files and pod logs' : 'Tailed files'}</h3>
       <div className="scroll"><table>
         <thead><tr><th>File</th><th>State</th><th className="num">Offset</th><th className="num">Lines read</th><th>Rules</th></tr></thead>
         <tbody>
           {(s.files || []).map(f => (
             <tr key={f.path}>
               <td className="wrap"><code>{f.path}</code></td>
-              <td>{f.open ? <Badge kind="ok">tailing</Badge> : <Badge kind="warn" title={f.error}>{f.error ? 'error' : 'waiting for file'}</Badge>}</td>
+              <td>{f.open ? <Badge kind="ok">{f.path.startsWith('k8s:') ? 'following' : 'tailing'}</Badge>
+                : <Badge kind="warn" title={f.error}>{f.error ? 'error' : f.path.startsWith('k8s:') ? 'connecting' : 'waiting for file'}</Badge>}</td>
               <td className="num">{f.offset}</td><td className="num">{f.lines}</td><td className="wrap">{(f.rules || []).join(', ')}</td>
             </tr>
           ))}

@@ -1,0 +1,133 @@
+# grepalert agent that follows the logs of pods selected by label.
+#
+#   kubectl apply -f grepalert-agent.yaml
+#   kubectl -n grepalert create secret generic grepalert-webhook --from-literal=url=https://hooks.slack.com/services/...
+#
+# Edit the rules with `kubectl -n grepalert edit configmap grepalert-rules`:
+# Kubernetes updates the mounted file within a minute and the agent applies
+# it without a restart (invalid rules are rejected and the old ones keep running).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grepalert
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grepalert-agent
+  namespace: grepalert
+---
+# Read-only: list pods and read their logs. To watch only some namespaces,
+# use a Role + RoleBinding in each of them instead.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grepalert-agent
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grepalert-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: grepalert-agent
+subjects:
+  - kind: ServiceAccount
+    name: grepalert-agent
+    namespace: grepalert
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grepalert-rules
+  namespace: grepalert
+data:
+  agent.yaml: |
+    name: k8s-agent
+    listen: "127.0.0.1:9300"          # local only: the probes call it inside the pod
+    rules_file: /etc/grepalert/rules.yaml
+    state_file: /var/lib/grepalert/state.json
+    # kubernetes: {}                  # in-cluster service account by default
+  rules.yaml: |
+    webhooks:
+      - name: chat
+        url: ${WEBHOOK_URL}           # from the grepalert-webhook secret
+        template: '{"text": {{ json .Text }}}'
+
+    rules:
+      # Every pod labelled app=checkout in namespace shop, container "app".
+      - name: checkout-errors
+        kubernetes:
+          namespace: shop
+          selector: app=checkout
+          container: app
+        pattern: 'ERROR (?P<code>\w+)'
+        severity: critical
+        webhooks: [chat]
+        suppress: {window: 5m, group_by: code}
+
+      # Panics in any pod of any namespace that has the label tier=backend.
+      - name: backend-panics
+        kubernetes:
+          namespace: "*"
+          selector: tier=backend
+        pattern: 'panic:|FATAL'
+        severity: critical
+        webhooks: [chat]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grepalert-agent
+  namespace: grepalert
+spec:
+  replicas: 1                         # one agent per cluster: every replica would alert
+  selector:
+    matchLabels: {app: grepalert-agent}
+  template:
+    metadata:
+      labels: {app: grepalert-agent}
+    spec:
+      serviceAccountName: grepalert-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: agent
+          image: ghcr.io/fadhlanhawali/grepalert-agent:latest   # 0.2.0 or later
+          args: ["-config", "/etc/grepalert/agent.yaml"]
+          env:
+            - name: WEBHOOK_URL
+              valueFrom:
+                secretKeyRef: {name: grepalert-webhook, key: url}
+          volumeMounts:
+            - {name: config, mountPath: /etc/grepalert, readOnly: true}
+            - {name: data, mountPath: /var/lib/grepalert}
+          livenessProbe:
+            exec:
+              command: [wget, -qO-, http://127.0.0.1:9300/healthz]
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: config
+          configMap: {name: grepalert-rules}
+        # Read positions; use a PersistentVolumeClaim to keep them across
+        # pod restarts (without one, a new pod starts at the end of each log).
+        - name: data
+          emptyDir: {}

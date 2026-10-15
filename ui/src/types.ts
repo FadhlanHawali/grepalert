@@ -41,6 +41,11 @@ export interface AgentStatus {
   rules?: RuleStatus[];
   files?: FileStatus[];
   alerts_total?: number;
+  /** Set when rules read Kubernetes pod logs. */
+  kubernetes?: {
+    error?: string;
+    sources: { namespace: string; selector?: string; container?: string; pods: number; error?: string }[];
+  };
   /** The agent's own rules, saved when a group replaced them. */
   own_rules_hash?: string;
   webhooks: {

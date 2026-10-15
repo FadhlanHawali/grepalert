@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,5 +133,29 @@ func TestGlobPicksUpNewFiles(t *testing.T) {
 		if !want[g] {
 			t.Fatalf("unexpected alert %q (all: %q)", g, got)
 		}
+	}
+}
+
+// A broken rules file is reported once, not on every check, and a fixed
+// version is applied.
+func TestBrokenRulesFileReportedOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	good := "webhooks: [{name: h, url: 'http://127.0.0.1:1/'}]\nrules:\n  - {name: a, files: [/x], pattern: A, webhooks: [h]}\n"
+	os.WriteFile(path, []byte(good), 0o644)
+	a := New(Config{RulesFile: path, StateFile: "off"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := a.loadRulesFile(true); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(path, []byte("rules: [{name: b, pattern: '('}]\n"), 0o644)
+	if err := a.loadRulesFile(false); err == nil {
+		t.Fatal("broken file accepted")
+	}
+	if err := a.loadRulesFile(false); err != nil {
+		t.Fatalf("the same broken file was reported again: %v", err)
+	}
+	os.WriteFile(path, []byte(strings.Replace(good, "pattern: A", "pattern: B", 1)), 0o644)
+	if err := a.loadRulesFile(false); err != nil || a.Rules().Rules[0].Pattern != "B" {
+		t.Fatalf("fixed file: err %v, pattern %q", err, a.Rules().Rules[0].Pattern)
 	}
 }

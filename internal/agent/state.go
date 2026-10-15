@@ -56,6 +56,9 @@ func (a *Agent) saveState(handles []*tailerHandle) {
 			s.Files[h.t.path] = *p
 		}
 	}
+	for path, p := range a.kube.positions() {
+		s.Files[path] = p
+	}
 	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return
